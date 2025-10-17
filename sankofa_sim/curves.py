@@ -1,27 +1,42 @@
 
-from .models import Sanctum
-import math
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    """Clamp helper so every curve honours canon guard rails."""
+    return max(minimum, min(maximum, value))
+
 
 def ase_yield_per_tick(base_ase: float, faith: float) -> float:
-    # Ase_yield = BaseAse * (1 + 0.015 * (Faith - 50)), clamped to [0.5x, 2.0x]
-    mult = 1.0 + 0.015 * (faith - 50.0)
-    mult = max(0.5, min(2.0, mult))
-    return base_ase * mult
+    """Deterministic ase multiplier derived from canon §12.1."""
+    # §12.1 Ase Resonance Ladder — each point of Faith above 50 adds +1.6% yield
+    # but the resonance stabilises between half and double the base output.
+    multiplier = 1.0 + 0.016 * (faith - 50.0)
+    multiplier = _clamp(multiplier, 0.5, 2.0)
+    return base_ase * multiplier
+
 
 def ekwan_cost_for_tier(base: float, tier: int) -> float:
-    # Cost = base * (1.25)^(tier-1)
-    return base * (1.25 ** (tier - 1))
+    """Realm tier upkeep using canon §12.2 geometric growth."""
+    # §12.2 Ekwan Flow — each tier compounds upkeep by 28% over the prior tier.
+    growth = 1.28 ** max(0, tier - 1)
+    return base * growth
 
-def morale_decay_step(morale: float, fear: float, guardian=False) -> float:
-    # Morale_next = Morale - (Fear/10)^(exp) , exp=1.2 (or 1.0 with guardian)
-    exponent = 1.0 if guardian else 1.2
-    return morale - ((fear / 10.0) ** exponent)
+
+def morale_decay_step(morale: float, fear: float, guardian: bool = False) -> float:
+    """Morale decay with guardian mitigation from canon §12.3."""
+    # §12.3 Morale Decay — fear pressure scales super-linearly without Guardians.
+    exponent = 1.15 if guardian else 1.25
+    decay = (max(0.0, fear) / 12.0) ** exponent
+    return morale - decay
+
 
 def faith_recovery_step(faith: float, harmony: float) -> float:
-    # Faith_{t+1} = Faith_t + (100 - Faith_t) * 0.05 * (Harmony/100)
-    return faith + (100.0 - faith) * 0.05 * (harmony / 100.0)
+    """Faith rebound paced by harmony as outlined in canon §12.4."""
+    # §12.4 Faith Recovery — harmony converts the gap to peak Faith at 6% rate.
+    recovery_rate = 0.06 * _clamp(harmony / 100.0, 0.0, 1.2)
+    return faith + (100.0 - faith) * recovery_rate
+
 
 def harmony_efficiency(harmony: float) -> float:
-    # Efficiency = 1 + 0.003*(Harmony - 50), clamp to [0.8, 1.25]
-    eff = 1.0 + 0.003 * (harmony - 50.0)
-    return max(0.8, min(1.25, eff))
+    """Harmony efficiency clamp per canon §12.5."""
+    # §12.5 Harmony Efficiency — efficiency window spans 0.85x to 1.3x.
+    efficiency = 1.0 + 0.004 * (harmony - 50.0)
+    return _clamp(efficiency, 0.85, 1.3)
