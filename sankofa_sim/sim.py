@@ -30,6 +30,8 @@ class SimConfig:
     fear_per_encounter: float = 5.0
     encounters_per_day: int = 2
     guardian_present: bool = False
+    courage_ritual_days: tuple[int, ...] = ()
+    ward_beads_days: tuple[int, ...] = ()
 
 
 @dataclass
@@ -46,6 +48,8 @@ class DailyLog:
     harmony_efficiency: float
     faith_recovered: float
     legacy_fragments: int
+    courage_ritual_used: bool
+    ward_beads_used: bool
 
 
 def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
@@ -59,6 +63,9 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
     fear = 25.0
     legacy_fragments = 0
     log: List[DailyLog] = []
+
+    courage_days = set(cfg.courage_ritual_days)
+    ward_beads_days = set(cfg.ward_beads_days)
 
     for day in range(1, cfg.days + 1):
         harmony_eff = harmony_efficiency(sanctum.harmony)
@@ -78,9 +85,17 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
 
         # Fear pressure shaped by encounters; Guardians mitigate decay (canon §12.3)
         guardian_today = cfg.guardian_present or sanctum.favor >= 65.0
+        ward_beads_today = day in ward_beads_days
         fear_gain = encounters_today * cfg.fear_per_encounter * (1.0 - (0.15 if guardian_today else 0.0))
+        if ward_beads_today:
+            fear_gain *= 0.8
         fear = _clamp(fear + fear_gain, 0.0, 100.0)
         morale = _clamp(morale_decay_step(morale, fear, guardian=guardian_today), 0.0, 100.0)
+
+        courage_ritual_today = day in courage_days
+        if courage_ritual_today:
+            fear = _clamp(fear - 20.0, 0.0, 100.0)
+            morale = _clamp(morale + 25.0, 0.0, 100.0)
 
         # Legacy continuity: morale collapse becomes fragments and a reset (canon §12.6)
         if morale <= 0.0:
@@ -114,6 +129,8 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
                 harmony_efficiency=round(harmony_eff, 3),
                 faith_recovered=round(faith_recovered, 2),
                 legacy_fragments=legacy_fragments,
+                courage_ritual_used=courage_ritual_today,
+                ward_beads_used=ward_beads_today,
             )
         )
 

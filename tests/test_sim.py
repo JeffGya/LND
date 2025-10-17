@@ -29,3 +29,33 @@ def test_faith_growth_increases_ase_yield():
     day1 = result["log"][0]
     day2 = result["log"][1]
     assert day2["ase_yield"] >= day1["ase_yield"]
+
+
+def test_ward_beads_reduce_fear_gain():
+    base_cfg = SimConfig(days=1, fear_per_encounter=10, encounters_per_day=2)
+    mitigated_cfg = SimConfig(
+        days=1,
+        fear_per_encounter=10,
+        encounters_per_day=2,
+        ward_beads_days=(1,),
+    )
+
+    base = run_economy_sim(base_cfg)
+    mitigated = run_economy_sim(mitigated_cfg)
+
+    assert mitigated["log"][0]["fear"] < base["log"][0]["fear"]
+
+
+def test_courage_ritual_boosts_morale():
+    base_cfg = SimConfig(days=1, fear_per_encounter=12, encounters_per_day=3)
+    ritual_cfg = SimConfig(
+        days=1,
+        fear_per_encounter=12,
+        encounters_per_day=3,
+        courage_ritual_days=(1,),
+    )
+
+    base = run_economy_sim(base_cfg)
+    boosted = run_economy_sim(ritual_cfg)
+
+    assert boosted["log"][0]["morale"] > base["log"][0]["morale"]

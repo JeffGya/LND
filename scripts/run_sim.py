@@ -6,6 +6,35 @@ import json
 from sankofa_sim import SimConfig, run_economy_sim
 
 
+def _parse_day_list(value: str) -> tuple[int, ...]:
+    """Parse a CLI `day=1,2,3` style option into a tuple of day indices."""
+
+    if not value:
+        return ()
+
+    if "=" in value:
+        key, _, payload = value.partition("=")
+        if key.strip().lower() not in {"day", "days"}:
+            raise argparse.ArgumentTypeError(
+                f"Expected prefix 'day=' or 'days=', received '{value}'."
+            )
+    else:
+        payload = value
+
+    if not payload:
+        raise argparse.ArgumentTypeError("Day list cannot be empty.")
+
+    try:
+        days = tuple(sorted({int(part.strip()) for part in payload.split(",") if part.strip()}))
+    except ValueError as exc:  # pragma: no cover - argparse surface ensures message
+        raise argparse.ArgumentTypeError("Day list must contain integers.") from exc
+
+    if any(day <= 0 for day in days):
+        raise argparse.ArgumentTypeError("Days must be positive integers.")
+
+    return days
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Echoes of the Sankofa deterministic sim")
     parser.add_argument("--days", type=int, default=20, help="Number of in-sim days to process")
@@ -24,6 +53,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=0xA2B94D10,
         help="Campaign seed (accepts decimal or 0x-prefixed hex)",
     )
+    parser.add_argument(
+        "--use_courage_ritual",
+        metavar="day=list",
+        type=_parse_day_list,
+        default=(),
+        help="Comma-separated day list for triggering the Courage ritual (e.g. day=5,12)",
+    )
+    parser.add_argument(
+        "--use_ward_beads",
+        metavar="day=list",
+        type=_parse_day_list,
+        default=(),
+        help="Comma-separated day list for Ward Beads mitigation (e.g. day=4,9)",
+    )
     return parser
 
 
@@ -38,6 +81,8 @@ def main() -> None:
         encounters_per_day=args.encounters,
         fear_per_encounter=args.fear,
         guardian_present=args.guardian,
+        courage_ritual_days=args.use_courage_ritual,
+        ward_beads_days=args.use_ward_beads,
     )
     result = run_economy_sim(cfg)
     print(json.dumps(result, indent=2))
