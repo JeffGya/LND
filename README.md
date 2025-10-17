@@ -19,8 +19,46 @@ Key configuration flags:
 - `--tier`: realm tier that scales ekwan upkeep (§12.2).
 - `--encounters` and `--fear`: encounter cadence and fear pressure (§12.3).
 - `--guardian`: toggles Guardian mitigation for morale (§12.3).
+- `--faith_init`, `--harmony_init`, `--favor_init`: override the Sanctum emotional baselines to
+  probe different economy states.
+- `--use_courage_ritual` / `--use_ward_beads`: schedule mitigation rituals by supplying
+  comma-separated day lists (e.g. `--use_courage_ritual day=5,15`).
+- `--log`: persist the JSON report to disk while still echoing it to stdout. Pass an explicit path
+  or omit the value to write to `simulation_logs/latest_run.json` under the repository root (parents
+  are created automatically, even if you launch the CLI from another directory).
 
 The command prints a JSON payload with a daily log and final summary snapshot.
+
+### Suggested follow-up sims
+
+Quick scenarios that exercise the new ritual scheduling and emotional baselines:
+
+- **Ritual preload (fear spike patch test):**
+
+  ```bash
+  python scripts/run_sim.py --days 20 --tier 2 --encounters 3 --fear 6 --seed 0xA2B94D10 \
+    --use_courage_ritual day=5,15 --use_ward_beads day=5,15
+  ```
+
+- **Stress Faith floor (verify ase collapse when Faith dips):**
+
+  ```bash
+  python scripts/run_sim.py --days 20 --tier 2 --encounters 3 --fear 6 --seed 0xA2B94D10 \
+    --faith_init 45
+  ```
+
+- **Harmony sensitivity check (compare economy when harmony varies):**
+
+  ```bash
+  python scripts/run_sim.py --days 20 --tier 2 --encounters 3 --fear 6 --seed 0xA2B94D10 \
+    --harmony_init 40
+
+  python scripts/run_sim.py --days 20 --tier 2 --encounters 3 --fear 6 --seed 0xA2B94D10 \
+    --harmony_init 60
+  ```
+
+The JSON daily log lists Ase, Ekwan spend, and the emotional globals (Faith, Harmony, Favor) so
+you can track how mitigation choices and starting states ripple through the broader economy.
 
 ## Extending the sim
 
