@@ -2,6 +2,7 @@
 # Echoes of the Sankofa — Project Codex (Starter)
 
 This folder is your **Codex** — the living index of canon, systems, and runnable sims.
+Full project Game design document is in docs/canon. Read that to get a full understanding of the project. Always refer to that first. 
 
 ## What’s inside
 - `Canon Map.md` — crosswalk back to the canonical **Legacy Never Dies** GDD.
