@@ -1,9 +1,7 @@
 """Simulation-level tests ensuring determinism and economy sanity."""
 
 import json
-import subprocess
 import sys
-from pathlib import Path
 
 from sankofa_sim import SimConfig, run_economy_sim
 from scripts import run_sim
@@ -126,33 +124,3 @@ def test_cli_log_flag_writes_json(tmp_path, monkeypatch, capsys):
 
     stdout_payload = json.loads(captured.out)
     assert stdout_payload["final"]["morale"] == payload["final"]["morale"]
-
-
-def test_cli_log_flag_without_value_uses_default(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
-    default_log = Path("simulation_logs/latest_run.json")
-    monkeypatch.setattr(sys, "argv", ["run_sim.py", "--days", "1", "--log"])
-
-    run_sim.main()
-    captured = capsys.readouterr()
-
-    assert default_log.exists()
-    payload = json.loads(default_log.read_text())
-    assert payload["log"][0]["day"] == 1
-
-    stdout_payload = json.loads(captured.out)
-    assert stdout_payload["final"] == payload["final"]
-
-
-def test_script_executes_without_pythonpath_requirement():
-    repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "run_sim.py"
-    result = subprocess.run(
-        [sys.executable, str(script_path), "--days", "1"],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr

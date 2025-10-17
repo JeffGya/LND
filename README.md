@@ -23,8 +23,7 @@ Key configuration flags:
   probe different economy states.
 - `--use_courage_ritual` / `--use_ward_beads`: schedule mitigation rituals by supplying
   comma-separated day lists (e.g. `--use_courage_ritual day=5,15`).
-- `--log`: persist the JSON report to disk while still echoing it to stdout. Pass an explicit path
-  or omit the value to write to `simulation_logs/latest_run.json` (parents are created
+- `--log`: persist the JSON report to disk while still echoing it to stdout (parents are created
   automatically).
 
 The command prints a JSON payload with a daily log and final summary snapshot.
