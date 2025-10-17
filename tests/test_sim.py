@@ -59,3 +59,25 @@ def test_courage_ritual_boosts_morale():
     boosted = run_economy_sim(ritual_cfg)
 
     assert boosted["log"][0]["morale"] > base["log"][0]["morale"]
+
+
+def test_initial_faith_can_start_below_default():
+    default = run_economy_sim(SimConfig(days=1))
+    lowered = run_economy_sim(SimConfig(days=1, faith_initial=45.0))
+
+    assert lowered["log"][0]["faith"] < default["log"][0]["faith"]
+
+
+def test_harmony_initial_impacts_ase_yield():
+    low_harmony = run_economy_sim(SimConfig(days=1, harmony_initial=40.0))
+    high_harmony = run_economy_sim(SimConfig(days=1, harmony_initial=60.0))
+
+    assert low_harmony["log"][0]["ase_yield"] < high_harmony["log"][0]["ase_yield"]
+
+
+def test_daily_log_includes_emotional_globals():
+    result = run_economy_sim(SimConfig(days=1))
+    entry = result["log"][0]
+
+    for key in ("faith", "harmony", "favor"):
+        assert key in entry

@@ -30,6 +30,9 @@ class SimConfig:
     fear_per_encounter: float = 5.0
     encounters_per_day: int = 2
     guardian_present: bool = False
+    faith_initial: float = 60.0
+    harmony_initial: float = 55.0
+    favor_initial: float = 20.0
     courage_ritual_days: tuple[int, ...] = ()
     ward_beads_days: tuple[int, ...] = ()
 
@@ -57,6 +60,9 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
 
     rng = PCG32(cfg.campaign_seed)
     sanctum = Sanctum()
+    sanctum.faith = _clamp(cfg.faith_initial, 0.0, 100.0)
+    sanctum.harmony = _clamp(cfg.harmony_initial, 10.0, 100.0)
+    sanctum.favor = _clamp(cfg.favor_initial, 0.0, 100.0)
     realm = RealmState(tier=cfg.realm_tier)
 
     morale = 80.0

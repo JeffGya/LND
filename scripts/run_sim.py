@@ -54,6 +54,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Campaign seed (accepts decimal or 0x-prefixed hex)",
     )
     parser.add_argument(
+        "--faith_init",
+        type=float,
+        default=60.0,
+        help="Initial Faith value for the Sanctum globals",
+    )
+    parser.add_argument(
+        "--harmony_init",
+        type=float,
+        default=55.0,
+        help="Initial Harmony value for the Sanctum globals",
+    )
+    parser.add_argument(
+        "--favor_init",
+        type=float,
+        default=20.0,
+        help="Initial Favor value for the Sanctum globals",
+    )
+    parser.add_argument(
         "--use_courage_ritual",
         metavar="day=list",
         type=_parse_day_list,
@@ -81,6 +99,9 @@ def main() -> None:
         encounters_per_day=args.encounters,
         fear_per_encounter=args.fear,
         guardian_present=args.guardian,
+        faith_initial=args.faith_init,
+        harmony_initial=args.harmony_init,
+        favor_initial=args.favor_init,
         courage_ritual_days=args.use_courage_ritual,
         ward_beads_days=args.use_ward_beads,
     )
