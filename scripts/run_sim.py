@@ -2,14 +2,7 @@
 
 import argparse
 import json
-import sys
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LOG_PATH = PROJECT_ROOT / "simulation_logs" / "latest_run.json"
-
-if PROJECT_ROOT.as_posix() not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT.as_posix())
 
 from sankofa_sim import SimConfig, run_economy_sim
 
@@ -95,13 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--log",
-        nargs="?",
         type=Path,
-        const=DEFAULT_LOG_PATH,
-        help=(
-            "Persist the JSON report to disk. Provide a path or pass the flag alone to use "
-            "simulation_logs/latest_run.json under the repository root."
-        ),
+        help="Optional path for persisting the JSON report alongside stdout",
     )
     return parser
 
@@ -125,13 +113,9 @@ def main() -> None:
     )
     result = run_economy_sim(cfg)
 
-    log_path: Path | None = args.log
-    if log_path is not None:
-        if not log_path.is_absolute():
-            log_path = (PROJECT_ROOT / log_path).resolve()
-
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(json.dumps(result, indent=2))
+    if args.log is not None:
+        args.log.parent.mkdir(parents=True, exist_ok=True)
+        args.log.write_text(json.dumps(result, indent=2))
 
     print(json.dumps(result, indent=2))
 

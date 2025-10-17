@@ -116,6 +116,17 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
 
         if courage_resistance_remaining > 0:
             fear = _clamp(fear - 5.0, 0.0, 100.0)
+        ward_beads_today = day in ward_beads_days
+        fear_gain = encounters_today * cfg.fear_per_encounter * (1.0 - (0.15 if guardian_today else 0.0))
+        if ward_beads_today:
+            fear_gain *= 0.8
+        fear = _clamp(fear + fear_gain, 0.0, 100.0)
+        morale = _clamp(morale_decay_step(morale, fear, guardian=guardian_today), 0.0, 100.0)
+
+        courage_ritual_today = day in courage_days
+        if courage_ritual_today:
+            fear = _clamp(fear - 20.0, 0.0, 100.0)
+            morale = _clamp(morale + 25.0, 0.0, 100.0)
 
         # Legacy continuity: morale collapse becomes fragments and a reset (canon §12.6)
         if morale <= 0.0:

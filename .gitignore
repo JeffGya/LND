@@ -1,2 +1,1 @@
-simulation_logs/
-!simulation_logs/.gitkeep
+simulation_logs/latest_run.json

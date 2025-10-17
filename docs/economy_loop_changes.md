@@ -32,7 +32,7 @@ This document captures the balance adjustments introduced in the latest ritual m
 - **Nightly passive recovery (`±5` morale/fear)** gives squads breathing room between scripted spikes without negating tension.
 - **Guardian + Ward Beads stacking** is multiplicative, so combining them with rituals allows designer-tunable difficulty ramps.
 - **Faith/Harmony baseline overrides** allow you to test failure and success cases directly from the CLI (`--faith_init`, `--harmony_init`, `--favor_init`).
-- **`--log` CLI flag** writes the JSON payload to disk (creating parent folders) while keeping stdout unchanged; when invoked without a path it saves to `simulation_logs/latest_run.json` under the repository root, making comparisons across runs easier.
+- **`--log` CLI flag** writes the JSON payload to disk (creating parent folders) while keeping stdout unchanged, making comparisons across runs easier.
 
 ## Suggested validation sims
 
