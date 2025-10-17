@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from pathlib import Path
 
 from sankofa_sim import SimConfig, run_economy_sim
 
@@ -85,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=(),
         help="Comma-separated day list for Ward Beads mitigation (e.g. day=4,9)",
     )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        help="Optional path for persisting the JSON report alongside stdout",
+    )
     return parser
 
 
@@ -106,6 +112,11 @@ def main() -> None:
         ward_beads_days=args.use_ward_beads,
     )
     result = run_economy_sim(cfg)
+
+    if args.log is not None:
+        args.log.parent.mkdir(parents=True, exist_ok=True)
+        args.log.write_text(json.dumps(result, indent=2))
+
     print(json.dumps(result, indent=2))
 
 
