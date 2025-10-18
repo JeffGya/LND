@@ -1,97 +1,19 @@
-# Echoes of the Sankofa — MVP Tuning Pass 02
-**Date:** 2025-10-18  
-**Seed Reference:** 0xA2B94D10  
-**Simulation Environment:** Tier 2, 20-day deterministic loop (Codex build with automated safeguards)  
-**Author:** Codex Simulation / Design Integration Team  
+# Tuning Pass 02 — Canon Notes
 
----
+Pass 02 locks the MVP guardrails that will ship with the Echoes of the Sankofa build. Use these targets as the default configuration unless a future balancing pass overrides them.
 
-## 🧭 Overview
-This second tuning pass validates the integration of all safeguard systems added in **Pass 01** inside the deterministic simulation loop.  
-The run results confirm the six core guardrails—Spike Guard, Courage-skip logic, Ward Bead charge budgeting, Faith Reflection, Harmony Bright Zone, and Voluntary Retirement—operate automatically without breaking canonical pacing.
+## Default safeguards
+- **Spike Guard:** enable by default with a 90 fear forecast trigger. When it fires, apply −18 fear / +12 morale before the day’s encounters and increment the streak counter.
+- **Courage rituals:** auto-schedule on days 5 and 15, but skip when fear < 60 and morale > 70 so the squad only spends when pressure is real.
+- **Ward Beads:** provide two auto-charges per 20-day campaign (days 5 and 15) to smooth the worst spikes.
+- **Faith guardrail:** after two straight days below 60 Faith, run Reflection/Prayer to restore Faith to at least 62 for a 15 Ase cost.
+- **Voluntary retirement:** once Spike Guard prevents disasters for ten days in a row, unlock a rite that costs 3 Favor and awards one Legacy fragment.
 
----
+## Validation runs
+Re-run the regression pack with seed `0xA2B94D10`, Tier 2, 20-day horizon, and three encounters per day unless otherwise stated:
+1. Ritual preload baseline with Spike Guard ON and the default charges.
+2. Faith floor stress with Faith starting at 45 and Harmony at 55 to confirm the guardrail.
+3. Harmony sensitivity at 40 and 60 to show the bright zone uplift.
+4. Spike-guard streak stress (four encounters, fear 10) to ensure the retirement rite unlocks cleanly.
 
-## 1. Key Observations
-| Scenario | Final Ase | Faith Final | Morale Min | Fear Max | Legacy Frags | Notes |
-|-----------|-----------|-------------|-------------|-----------|---------------|-------|
-| **Faith Floor w/ Guardrail** | 1401.87 | 78.66 | 71.36 | 88.44 | 0 | Reflection/Prayer auto-triggered Day 2; loop recovered without stall. |
-| **Harmony Low (40)** | 1330.79 | 74.73 | 85.5 | 80.6 | 0 | −10 % yield; confirms efficiency floor ≈ 0.94. |
-| **Harmony High (60)** | 1486.68 | 80.26 | 85.5 | 80.6 | 0 | +11 % yield; Harmony ≥ 55 produces optimal Bright Zone. |
-| **Spike Guard Streak Stress (4 encounters/day)** | 1445.78 | 78.93 | 90.2 | 59.4 | **1** | 10 Spike Guard activations → voluntary retirement Day 19 (cost 3 Favor). |
-
----
-
-## 2. System Behaviours Verified
-
-### 🛡 Spike Guard Auto-Ritual
-- Forecasts next-day Fear; fires when projection ≥ 90.  
-- Effect per trigger: −18 Fear / +12 Morale / −30 % Fear gain.  
-- Ritual preload cap: Fear ≤ 88.44 for 20 days, Morale ≥ 71.36.  
-- Stress test: 10 activations, final voluntary retirement = 1 Fragment (−3 Favor).
-
-### 💎 Ward Beads Budgeting
-- Pool: 2 charges per 20-day arc.  
-- Defaults consumed on Days 5 & 15 if unused.  
-- Correctly depleted and logged in harmony/faith runs.
-
-### 💪 Courage Ritual Awareness
-- Skips itself when Fear < 60 and Morale > 70.  
-- Saved one ritual in preload run (Day 15) → resource efficiency +3 %.  
-- Optional override: `--disable_courage_skip` for designer stress tests.
-
-### ✨ Faith Guardrail Downtime
-- Triggers after 2 days below Faith 60.  
-- Adds +15 Ase and raises Faith to ≥ 62.  
-- Prevents yield collapse (verified in Faith-floor run).
-
-### ☯ Harmony Bright Zone
-- Harmony ≥ 55 maintains efficiency ≥ 1.02 and +10 % Ase.  
-- Below 40 reduces efficiency ≈ 0.94.  
-- Meditation task auto-fires when Harmony < 55 for 2 days.
-
-### 🕯 Voluntary Retirement Rite
-- Unlocks after ≥ 10 Spike Guard activations.  
-- Grants 1 Legacy Fragment / cost 3 Favor.  
-- Logged on Day 19 of Spike Guard streak test.
-
----
-
-## 3. Economy Loop Update Summary
-These guardrails keep Tier 2 campaigns resilient during designed fear spikes while preserving the moral rhythm of pressure → release → reflection → legacy.
-
-**Why It Matters**
-- Fear and morale now oscillate within readable bounds, no manual babysitting.  
-- Faith rarely drops below 60; Ase production remains predictable.  
-- Legacy progression continues through retirement rather than death.  
-
----
-
-## 4. Integration Summary
-| System | Default Values (Verified) | File References |
-|---------|---------------------------|-----------------|
-| Spike Guard Threshold | 90 Fear | `run_sim.py:L121-149` |
-| Courage Skip Condition | Fear < 60 ∧ Morale > 70 | `run_sim.py:L37-86` |
-| Ward Bead Charges | 2 / 20 days | `simulation_logs/*` |
-| Faith Guardrail | Threshold 60 / Floor 62 / Cost 15 Ase | `faith_floor_run.json` |
-| Retirement Rite | Min Streak 10 / Favor Cost 3 | `spike_guard_streak_run.json` |
-| Harmony Bright Zone | 55 ≤ H ≤ 60 | `harmony_high_run.json` |
-
----
-
-## 5. Recommended Next Steps
-1. **Telemetry Visualization:** plot Fear↔Morale and Faith↔Ase curves using daily log flags.  
-2. **Retirement Balancing:** explore Favor cost 2-4 to tune long-term economy.  
-3. **Campaign Tier Expansion:** run Tier 3 with 4 encounters/day to validate curve scaling.  
-4. **UI Surface:** add “Spike Guard Active” indicator and “Reflection Pending” badge for testing UX.  
-
----
-
-## 📎 Commit Path
-`docs/mvp_notes/tuning_pass_02.md`  
-
-Upstream References → _Legacy Never Dies_ §8–§12 · _Game Design v1_ §7/§9 · _Economic Model v1_ §7/§9/§11 · _Balance Curve Modeling v1_ §12 · _Design Checklist v2_ §5  
-
----
-
-*End of Tuning Pass 02 — Automated Safeguards Validated and Canon Economy Loop Locked.*
+These guardrails should keep morale above collapse thresholds, cap fear near the high 80s under normal pressure, and maintain Legacy flow without forcing player-engineered wipes.
