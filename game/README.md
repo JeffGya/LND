@@ -7,12 +7,11 @@ This folder now contains the determinism layer for the playable MVP. Drop the `e
 ```
 echoes_mvp/
   project.godot              # Autoload and project settings
-  res/
-    core/
-      seed/                  # Seed derivation + PRNG implementations
-      sim/                   # DemoSimHarness scene + script
-    tests/                   # Determinism self-check scene/script
-    ui/                      # DebugReplayPanel scene/script
+  core/
+    seed/                    # Seed derivation + PRNG implementations
+    sim/                     # DemoSimHarness scene + script
+  tests/                     # Determinism self-check scene/script
+  ui/                        # DebugReplayPanel scene/script
 ```
 
 ### Autoload configuration
