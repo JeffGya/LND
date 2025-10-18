@@ -17,10 +17,10 @@ python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\acti
 python -m pip install --upgrade pip
 
 # 2) Run a 20-day Tier-1 baseline
-python scripts/run_sim.py --days 20 --tier 1 --seed 0xA2B94D10
+python simulation/scripts/run_sim.py --days 20 --tier 1 --seed 0xA2B94D10
 
 # 3) Try a harsher world (Tier 5)
-python scripts/run_sim.py --days 20 --tier 5
+python simulation/scripts/run_sim.py --days 20 --tier 5
 ```
 
 The output JSON includes a daily log you can graph or ingest into Notion.

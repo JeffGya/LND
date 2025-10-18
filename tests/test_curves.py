@@ -1,6 +1,6 @@
 """Curve regression tests anchored to canon §12."""
 
-from sankofa_sim.curves import (
+from simulation.curves import (
     ase_yield_per_tick,
     ekwan_cost_for_tier,
     faith_recovery_step,

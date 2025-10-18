@@ -5,8 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sankofa_sim import SimConfig, run_economy_sim
-from scripts import run_sim
+from simulation import SimConfig, run_economy_sim
+from simulation.scripts import run_sim
 
 
 def test_deterministic_campaign_seed():
@@ -152,7 +152,7 @@ def test_cli_log_flag_without_value_uses_default(tmp_path, monkeypatch, capsys):
 
 def test_cli_log_relative_path_resolves_against_repo_root(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    relative_target = Path("simulation_logs/test_relative.json")
+    relative_target = Path("simulation/logs/test_relative.json")
     expected = run_sim.PROJECT_ROOT / relative_target
     monkeypatch.setattr(
         sys,
@@ -174,7 +174,7 @@ def test_cli_log_relative_path_resolves_against_repo_root(tmp_path, monkeypatch,
 
 def test_script_executes_without_pythonpath_requirement():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "run_sim.py"
+    script_path = repo_root / "simulation" / "scripts" / "run_sim.py"
     result = subprocess.run(
         [sys.executable, str(script_path), "--days", "1"],
         cwd=repo_root,

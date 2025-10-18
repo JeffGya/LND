@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LOG_DIR = PROJECT_ROOT / "simulation_logs"
+SIMULATION_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = SIMULATION_ROOT.parent
+LOG_DIR = SIMULATION_ROOT / "logs"
 DOCS_DIR = PROJECT_ROOT / "docs" / "simulation"
 
 RUN_FILES = {
