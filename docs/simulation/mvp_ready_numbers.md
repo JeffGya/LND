@@ -23,3 +23,11 @@
 - **harmony_low** → Final Ase 1330.79, Faith 74.73, Harmony 35.13, Favor 17.94, Morale 85.50, Fear 80.64; Spike Guard 3x, Courage used 1x (skipped 1x), Ward Beads 2x, Reflection/Prayer 0x, Voluntary retirements 0x.
 - **harmony_high** → Final Ase 1486.68, Faith 80.26, Harmony 55.14, Favor 18.33, Morale 85.50, Fear 80.64; Spike Guard 3x, Courage used 1x (skipped 1x), Ward Beads 2x, Reflection/Prayer 0x, Voluntary retirements 0x.
 - **spike_guard_stress** → Final Ase 1445.78, Faith 78.93, Harmony 49.87, Favor 14.23, Morale 90.22, Fear 59.40; Spike Guard 10x, Courage used 2x (skipped 0x), Ward Beads 2x, Reflection/Prayer 0x, Voluntary retirements 1x.
+
+MVP build reference (pin these)
+	•	SPIKE_GUARD_THRESHOLD = 90
+	•	WARD_BEADS_CHARGES_PER_20D = 2
+	•	COURAGE_SKIP_CONDITION = (fear < 60) AND (morale > 70)
+	•	FAITH_GUARDRAIL = { threshold: 60, floor: 62, ase_cost: 15, required_days: 2 }
+	•	RETIREMENT_RITE = { min_streak: 10, favor_cost: 3 }
+	•	HARMONY_BRIGHT_ZONE = 55–60 (target ≥55)
