@@ -86,6 +86,48 @@ Quick scenarios that exercise the new ritual scheduling and emotional baselines:
 The JSON daily log lists Ase, Ekwan spend, and the emotional globals (Faith, Harmony, Favor) so
 you can track how mitigation choices and starting states ripple through the broader economy.
 
+
+
+## Godot deterministic MVP project
+
+The `game/echoes_mvp` Godot 4 project bundles the deterministic seed service, the PCG32 PRNG, and an xxHash64 derivation layer per the GDD. The project includes:
+
+- `res://core/seed/` — `XXHash64.gd`, `PCG32.gd`, and the `SeedService` autoload facade.
+- `res://core/sim/` — `DemoSimHarness.gd/tscn`, a reproducible harness that rolls loot, combat initiative, and enemy packs.
+- `res://tests/TestDeterminism.gd/tscn` — the acceptance test scene that runs the harness three times and verifies byte-identical logs, then swaps seeds to confirm divergence.
+- `res://ui/DebugReplayPanel.gd/tscn` — a debug panel that exposes the campaign seed lineage, snapshots, and restore/replay verification.
+
+The autoload is already registered inside `project.godot`:
+
+```ini
+[autoload]
+SeedService="*res://core/seed/SeedService.gd"
+```
+
+### Running the harness
+
+1. Open `game/echoes_mvp` in Godot 4.x.
+2. Run the main scene (`DemoSimHarness.tscn`). The console prints the deterministic log for the default campaign seed (`0xA2B94D10`). Re-running yields identical output.
+
+### Acceptance test
+
+To rerun the determinism check without the editor:
+
+```bash
+godot4 --headless --path game/echoes_mvp --run res://tests/TestDeterminism.tscn
+```
+
+The scene prints:
+
+```
+Determinism: PASS (3/3 identical)
+Cross-seed divergence: PASS
+```
+
+### Debugging snapshots
+
+Add `DebugReplayPanel.tscn` to the scene tree alongside the harness to inspect derived seeds and interact with the snapshot/restore buttons. “Snapshot” prints a JSON payload of all seeds and PRNG cursors, while “Restore Snapshot” reloads the state, reruns the harness without reseeding, and reports whether the replayed log matches the stored baseline.
+
 ## Extending the sim
 
 - Curves live in `simulation/curves.py` and are annotated with canon §12 references.
