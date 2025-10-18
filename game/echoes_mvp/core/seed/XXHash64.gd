@@ -1,12 +1,12 @@
 extends RefCounted
 class_name XXHash64
 
-const PRIME1: int = 11400714785074694791
-const PRIME2: int = 14029467366897019727
+const PRIME1: int = -7046029288634856825 # 11400714785074694791 modulo 2^64
+const PRIME2: int = -4417276706812531889 # 14029467366897019727 modulo 2^64
 const PRIME3: int = 1609587929392839161
-const PRIME4: int = 9650029242287828579
+const PRIME4: int = -8796714831421723037 # 9650029242287828579 modulo 2^64
 const PRIME5: int = 2870177450012600261
-const UINT64_MASK: int = 0xFFFFFFFFFFFFFFFF
+const UINT64_MASK: int = -1 # bit pattern 0xFFFFFFFFFFFFFFFF in two's complement
 
 static func xxh64(data: PackedByteArray, seed: int = 0) -> int:
     var length: int = data.size()

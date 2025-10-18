@@ -4,7 +4,7 @@ class_name PCG32
 const MULTIPLIER: int = 6364136223846793005
 const DEFAULT_INC: int = 1442695040888963407
 const UINT32_MASK: int = 0xFFFFFFFF
-const UINT64_MASK: int = 0xFFFFFFFFFFFFFFFF
+const UINT64_MASK: int = -1 # bit pattern 0xFFFFFFFFFFFFFFFF in two's complement
 
 var _state: int = 0
 var _inc: int = DEFAULT_INC

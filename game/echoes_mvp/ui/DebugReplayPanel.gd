@@ -111,13 +111,14 @@ func _refresh_lineage() -> void:
     var stage_index := _parse_int(_stage_input.text, 0)
     var encounter_index := _parse_int(_encounter_input.text, 0)
 
-    harness.seed_service.prng_for_realm(realm_id)
-    harness.seed_service.prng_for_stage(realm_id, stage_index)
-    harness.seed_service.prng_for_encounter(realm_id, stage_index, encounter_index)
-    harness.seed_service.prng_for_combat(realm_id, stage_index, encounter_index, "initiative")
-    harness.seed_service.prng_for_loot(realm_id, stage_index, encounter_index)
+    var service := harness.get_seed_service()
+    service.prng_for_realm(realm_id)
+    service.prng_for_stage(realm_id, stage_index)
+    service.prng_for_encounter(realm_id, stage_index, encounter_index)
+    service.prng_for_combat(realm_id, stage_index, encounter_index, "initiative")
+    service.prng_for_loot(realm_id, stage_index, encounter_index)
 
-    var book := harness.seed_service.get_seed_book()
+    var book := service.get_seed_book()
     _campaign_label.text = "Campaign seed: %s" % book.campaign_seed
     _realm_seed_label.text = _format_seed(_safe_get(book.subseeds["realm"], realm_id))
     _stage_seed_label.text = _format_seed(_safe_get_nested(book.subseeds["stage"], [realm_id, stage_index]))
@@ -131,11 +132,11 @@ func _on_snapshot_pressed() -> void:
     _refresh_lineage()
 
 func _on_restore_pressed() -> void:
-    if harness._cached_snapshot.is_empty():
+    if !harness.has_cached_snapshot():
         push_warning("No snapshot available to restore.")
         return
     harness.restore_cached_snapshot()
-    var replay := harness.run_once(harness.seed_service.get_seed_book().campaign_seed, _last_run_index, false)
+    var replay := harness.run_once(harness.get_seed_service().get_seed_book().campaign_seed, _last_run_index, false)
     var identical := replay == _last_log
     print("Replay identical: %s" % (identical ? "true" : "false"))
     _log_output.text = replay
@@ -148,7 +149,7 @@ func _on_restore_pressed() -> void:
 
 func _run_and_display() -> void:
     var campaign_seed := DemoSimHarness.DEFAULT_CAMPAIGN_SEED
-    harness.seed_service.init_campaign(campaign_seed)
+    harness.get_seed_service().init_campaign(campaign_seed)
     harness.snapshot_and_store()
     _last_log = harness.run_once(campaign_seed, _last_run_index, false)
     _log_output.text = _last_log
@@ -158,8 +159,10 @@ func _format_seed(value) -> String:
     if value == null:
         return "--"
     if typeof(value) in [TYPE_INT, TYPE_FLOAT]:
-        var masked := int(value) & 0xFFFFFFFFFFFFFFFF
-        return "0x%016X" % masked
+        var int_value := int(value)
+        var high := int((int_value >> 32) & 0xFFFFFFFF)
+        var low := int(int_value & 0xFFFFFFFF)
+        return "0x%08X%08X" % [high, low]
     return "--"
 
 func _safe_get(container: Dictionary, key) -> Variant:
