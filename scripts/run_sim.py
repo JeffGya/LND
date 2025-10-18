@@ -2,7 +2,14 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_LOG_PATH = PROJECT_ROOT / "simulation_logs" / "latest_run.json"
+
+if PROJECT_ROOT.as_posix() not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT.as_posix())
 
 from sankofa_sim import SimConfig, run_economy_sim
 
@@ -87,9 +94,91 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated day list for Ward Beads mitigation (e.g. day=4,9)",
     )
     parser.add_argument(
+        "--auto_courage_days",
+        metavar="day=list",
+        type=_parse_day_list,
+        default=(5, 15),
+        help="Default Courage ritual cadence when no explicit day list is provided",
+    )
+    parser.add_argument(
+        "--auto_ward_beads_days",
+        metavar="day=list",
+        type=_parse_day_list,
+        default=(5, 15),
+        help="Default Ward Beads cadence when no explicit day list is provided",
+    )
+    parser.add_argument(
+        "--ward_bead_charges",
+        type=int,
+        default=2,
+        help="Total Ward Beads charges available for the campaign",
+    )
+    parser.add_argument(
+        "--disable_courage_skip",
+        action="store_true",
+        help="Always fire Courage rituals even if fear is low and morale is high",
+    )
+    parser.add_argument(
+        "--disable_spike_guard",
+        action="store_true",
+        help="Turn off the automatic Spike Guard fear mitigation",
+    )
+    parser.add_argument(
+        "--spike_guard_threshold",
+        type=float,
+        default=90.0,
+        help="Fear forecast value that triggers the Spike Guard auto-ritual",
+    )
+    parser.add_argument(
+        "--faith_guardrail_threshold",
+        type=float,
+        default=60.0,
+        help="Faith value that the guardrail monitors",
+    )
+    parser.add_argument(
+        "--faith_guardrail_days",
+        type=int,
+        default=2,
+        help="Consecutive days below the threshold before Reflection/Prayer fires",
+    )
+    parser.add_argument(
+        "--faith_guardrail_floor",
+        type=float,
+        default=62.0,
+        help="Faith floor applied when the guardrail triggers",
+    )
+    parser.add_argument(
+        "--faith_guardrail_cost",
+        type=float,
+        default=15.0,
+        help="Ase cost of triggering the Reflection/Prayer guardrail",
+    )
+    parser.add_argument(
+        "--disable_retirement_rite",
+        action="store_true",
+        help="Skip the voluntary retirement rite unlocked by Spike Guard streaks",
+    )
+    parser.add_argument(
+        "--retirement_rite_streak",
+        type=int,
+        default=10,
+        help="Number of Spike Guard days required before the retirement rite unlocks",
+    )
+    parser.add_argument(
+        "--retirement_rite_favor_cost",
+        type=float,
+        default=3.0,
+        help="Favor spent when the retirement rite is performed",
+    )
+    parser.add_argument(
         "--log",
+        nargs="?",
         type=Path,
-        help="Optional path for persisting the JSON report alongside stdout",
+        const=DEFAULT_LOG_PATH,
+        help=(
+            "Persist the JSON report to disk. Provide a path or pass the flag alone to use "
+            "simulation_logs/latest_run.json under the repository root."
+        ),
     )
     return parser
 
@@ -110,12 +199,29 @@ def main() -> None:
         favor_initial=args.favor_init,
         courage_ritual_days=args.use_courage_ritual,
         ward_beads_days=args.use_ward_beads,
+        courage_auto_days=args.auto_courage_days,
+        ward_beads_auto_days=args.auto_ward_beads_days,
+        ward_beads_charges=args.ward_bead_charges,
+        skip_courage_when_comfortable=not args.disable_courage_skip,
+        spike_guard_enabled=not args.disable_spike_guard,
+        spike_guard_threshold=args.spike_guard_threshold,
+        faith_guardrail_threshold=args.faith_guardrail_threshold,
+        faith_guardrail_required_days=args.faith_guardrail_days,
+        faith_guardrail_floor=args.faith_guardrail_floor,
+        faith_guardrail_ase_cost=args.faith_guardrail_cost,
+        retirement_rite_enabled=not args.disable_retirement_rite,
+        retirement_rite_min_streak=args.retirement_rite_streak,
+        retirement_rite_favor_cost=args.retirement_rite_favor_cost,
     )
     result = run_economy_sim(cfg)
 
-    if args.log is not None:
-        args.log.parent.mkdir(parents=True, exist_ok=True)
-        args.log.write_text(json.dumps(result, indent=2))
+    log_path: Path | None = args.log
+    if log_path is not None:
+        if not log_path.is_absolute():
+            log_path = (PROJECT_ROOT / log_path).resolve()
+
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(json.dumps(result, indent=2))
 
     print(json.dumps(result, indent=2))
 

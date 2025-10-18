@@ -23,8 +23,20 @@ Key configuration flags:
   probe different economy states.
 - `--use_courage_ritual` / `--use_ward_beads`: schedule mitigation rituals by supplying
   comma-separated day lists (e.g. `--use_courage_ritual day=5,15`).
-- `--log`: persist the JSON report to disk while still echoing it to stdout (parents are created
-  automatically).
+- `--auto_courage_days` / `--auto_ward_beads_days`: adjust the default days that the sim will use
+  when you do not supply a manual schedule (defaults to days 5 and 15).
+- `--ward_bead_charges`: set how many Ward Beads are available in the campaign (defaults to `2`).
+- `--disable_courage_skip`: force Courage rituals to fire even when fear is low and morale is high.
+- `--disable_spike_guard` / `--spike_guard_threshold`: toggle or retune the automatic Spike Guard
+  mitigation that fires when the fear forecast is dangerously high.
+- `--faith_guardrail_threshold`, `--faith_guardrail_days`, `--faith_guardrail_floor`,
+  `--faith_guardrail_cost`: tune the Reflection/Prayer downtime that restores Faith when it stays
+  below the guardrail for consecutive days.
+- `--disable_retirement_rite`, `--retirement_rite_streak`, `--retirement_rite_favor_cost`: control
+  when (and if) the voluntary retirement rite unlocks after repeated Spike Guard saves.
+- `--log`: persist the JSON report to disk while still echoing it to stdout. Pass an explicit path
+  or omit the value to write to `simulation_logs/latest_run.json` under the repository root (parents
+  are created automatically, even if you launch the CLI from another directory).
 
 The command prints a JSON payload with a daily log and final summary snapshot.
 
