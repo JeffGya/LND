@@ -1,4 +1,4 @@
-"""Ensure the sankofa_sim package is importable for local pytest runs."""
+"""Ensure the simulation package is importable for local pytest runs."""
 
 import sys
 from pathlib import Path

@@ -5,13 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LOG_PATH = PROJECT_ROOT / "simulation_logs" / "latest_run.json"
+SIMULATION_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = SIMULATION_ROOT.parent
+DEFAULT_LOG_PATH = SIMULATION_ROOT / "logs" / "latest_run.json"
 
 if PROJECT_ROOT.as_posix() not in sys.path:
     sys.path.insert(0, PROJECT_ROOT.as_posix())
 
-from sankofa_sim import SimConfig, run_economy_sim
+from simulation import SimConfig, run_economy_sim
 
 
 def _parse_day_list(value: str) -> tuple[int, ...]:
@@ -255,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
         const=DEFAULT_LOG_PATH,
         help=(
             "Persist the JSON report to disk. Provide a path or pass the flag alone to use "
-            "simulation_logs/latest_run.json under the repository root."
+            "simulation/logs/latest_run.json inside the repository."
         ),
     )
     return parser
