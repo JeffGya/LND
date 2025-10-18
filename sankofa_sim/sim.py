@@ -30,6 +30,11 @@ class SimConfig:
     fear_per_encounter: float = 5.0
     encounters_per_day: int = 2
     guardian_present: bool = False
+    faith_initial: float = 60.0
+    harmony_initial: float = 55.0
+    favor_initial: float = 20.0
+    courage_ritual_days: tuple[int, ...] = ()
+    ward_beads_days: tuple[int, ...] = ()
 
 
 @dataclass
@@ -46,6 +51,8 @@ class DailyLog:
     harmony_efficiency: float
     faith_recovered: float
     legacy_fragments: int
+    courage_ritual_used: bool
+    ward_beads_used: bool
 
 
 def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
@@ -53,6 +60,9 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
 
     rng = PCG32(cfg.campaign_seed)
     sanctum = Sanctum()
+    sanctum.faith = _clamp(cfg.faith_initial, 0.0, 100.0)
+    sanctum.harmony = _clamp(cfg.harmony_initial, 10.0, 100.0)
+    sanctum.favor = _clamp(cfg.favor_initial, 0.0, 100.0)
     realm = RealmState(tier=cfg.realm_tier)
 
     morale = 80.0
@@ -60,7 +70,14 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
     legacy_fragments = 0
     log: List[DailyLog] = []
 
+    courage_days = set(cfg.courage_ritual_days)
+    ward_beads_days = set(cfg.ward_beads_days)
+    courage_resistance_remaining = 0
+
     for day in range(1, cfg.days + 1):
+        fear = _clamp(fear - 5.0, 0.0, 100.0)
+        morale = _clamp(morale + 5.0, 0.0, 100.0)
+
         harmony_eff = harmony_efficiency(sanctum.harmony)
 
         # Ase generation: Faith resonance first, Harmony lifts second (canon §12.1, §12.5)
@@ -76,11 +93,29 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
         sanctum.ekwan = _clamp(sanctum.ekwan - ekwan_spend, 0.0, 9999.0)
         sanctum.ase = max(0.0, sanctum.ase + ase_yield - ekwan_spend * 0.35)
 
+        # Courage rituals fire before the encounters begin; they pre-buffer morale and reduce fear
+        ward_beads_today = day in ward_beads_days
+        courage_ritual_today = day in courage_days
+        if courage_ritual_today:
+            fear = _clamp(fear - 20.0, 0.0, 100.0)
+            morale = _clamp(morale + 25.0, 0.0, 100.0)
+            courage_resistance_remaining = max(courage_resistance_remaining, 8)
+
         # Fear pressure shaped by encounters; Guardians mitigate decay (canon §12.3)
         guardian_today = cfg.guardian_present or sanctum.favor >= 65.0
-        fear_gain = encounters_today * cfg.fear_per_encounter * (1.0 - (0.15 if guardian_today else 0.0))
+        fear_gain_multiplier = 1.0
+        if guardian_today:
+            fear_gain_multiplier *= 0.85
+        if courage_resistance_remaining > 0:
+            fear_gain_multiplier *= 0.5
+        if ward_beads_today:
+            fear_gain_multiplier *= 0.8
+        fear_gain = encounters_today * cfg.fear_per_encounter * fear_gain_multiplier
         fear = _clamp(fear + fear_gain, 0.0, 100.0)
         morale = _clamp(morale_decay_step(morale, fear, guardian=guardian_today), 0.0, 100.0)
+
+        if courage_resistance_remaining > 0:
+            fear = _clamp(fear - 5.0, 0.0, 100.0)
 
         # Legacy continuity: morale collapse becomes fragments and a reset (canon §12.6)
         if morale <= 0.0:
@@ -114,8 +149,13 @@ def run_economy_sim(cfg: SimConfig) -> Dict[str, Any]:
                 harmony_efficiency=round(harmony_eff, 3),
                 faith_recovered=round(faith_recovered, 2),
                 legacy_fragments=legacy_fragments,
+                courage_ritual_used=courage_ritual_today,
+                ward_beads_used=ward_beads_today,
             )
         )
+
+        if courage_resistance_remaining > 0:
+            courage_resistance_remaining -= 1
 
     return {
         "config": asdict(cfg),
