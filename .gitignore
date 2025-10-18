@@ -1,0 +1,12 @@
+simulation_logs/*
+!simulation_logs/.gitkeep
+!simulation_logs/ritual_preload_run.json
+!simulation_logs/faith_floor_run.json
+!simulation_logs/harmony_low_run.json
+!simulation_logs/harmony_high_run.json
+!simulation_logs/spike_guard_streak_run.json
+!simulation_logs/_reg_preload.json
+!simulation_logs/_reg_faithfloor.json
+!simulation_logs/_reg_harm_low.json
+!simulation_logs/_reg_harm_high.json
+!simulation_logs/_reg_stress.json
