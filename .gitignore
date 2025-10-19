@@ -10,3 +10,10 @@ simulation_logs/*
 !simulation_logs/_reg_harm_low.json
 !simulation_logs/_reg_harm_high.json
 !simulation_logs/_reg_stress.json
+
+
+# --- IGNORE ---
+/android/
+/ios/
+/build/
+.vscode/
