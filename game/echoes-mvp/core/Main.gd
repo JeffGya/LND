@@ -31,3 +31,4 @@ func _ready():
 	
 	var h = XXHash64.xxh64_string("Echoes")
 	print("Echoes (hex) => ", "0x%016X" % h)
+	
