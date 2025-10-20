@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cfil0y8on4p0g"]
+
+[ext_resource type="Script" uid="uid://s0tlhm1esucd" path="res://core/sim/demo_sim_harness.gd" id="1_nyrnl"]
+
+[node name="DemoSimHarness" type="Node"]
+script = ExtResource("1_nyrnl")
