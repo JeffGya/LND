@@ -1,0 +1,56 @@
+[gd_scene load_steps=2 format=3 uid="uid://d3vp7dr5lybbm"]
+
+[ext_resource type="Script" uid="uid://bi0h8tkaural8" path="res://core/ui/DebugReplayPanel.gd" id="1_nphbv"]
+
+[node name="Control" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="Panel" parent="."]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+script = ExtResource("1_nphbv")
+
+[node name="Root" type="VBoxContainer" parent="Panel"]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="SeedRow" type="HBoxContainer" parent="Panel/Root"]
+layout_mode = 2
+
+[node name="campaign_seed" type="Label" parent="Panel/Root/SeedRow"]
+layout_mode = 2
+
+[node name="SeedInput" type="LineEdit" parent="Panel/Root/SeedRow"]
+layout_mode = 2
+size_flags_horizontal = 2
+
+[node name="InitBtn" type="Button" parent="Panel/Root/SeedRow"]
+layout_mode = 2
+text = "Init"
+
+[node name="SnapRow" type="HBoxContainer" parent="Panel/Root"]
+layout_mode = 2
+
+[node name="SnapshotBtn" type="Button" parent="Panel/Root/SnapRow"]
+layout_mode = 2
+text = "Snapshot"
+
+[node name="RestoreBtn" type="Button" parent="Panel/Root/SnapRow"]
+layout_mode = 2
+text = "Restore"
+
+[node name="RunDemoBtn" type="Button" parent="Panel/Root/SnapRow"]
+layout_mode = 2
+text = "Run Demo"
+
+[node name="Output" type="RichTextLabel" parent="Panel/Root"]
+custom_minimum_size = Vector2(0, 280)
+layout_mode = 2
+size_flags_vertical = 3

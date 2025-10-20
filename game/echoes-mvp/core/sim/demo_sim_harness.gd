@@ -5,8 +5,7 @@ extends Node
 
 # NOTE: SeedService is an AutoLoad singleton. Call SeedService.* directly; do NOT preload it here.
 
-static func run_demo(campaign_seed: int) -> void:
-	# Reset global PRNG registry to a known campaign seed
+static func build_log(campaign_seed: int) -> String:
 	SeedService.init_with_campaign(campaign_seed)
 
 	var out: String = ""
@@ -46,7 +45,10 @@ static func run_demo(campaign_seed: int) -> void:
 	out += "----------------------------\n"
 	out += "Simulation complete.\n"
 
-	print(out)
+	return out
+
+static func run_demo(campaign_seed: int) -> void:
+	print(build_log(campaign_seed))
 
 func _ready() -> void:
 	# Use your known stable campaign seed so repeated runs match byte-for-byte.
