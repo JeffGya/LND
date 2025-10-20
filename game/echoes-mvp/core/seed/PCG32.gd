@@ -48,3 +48,15 @@ func get_state() -> Dictionary:
 func set_state(d: Dictionary) -> void:
 	_state = int(d.get("state", 0)) & MASK64
 	_inc   = int(d.get("inc", 1)) & MASK64
+
+# Move the generator forward by n steps without producing outputs.
+# This naive loop is **correct** and good enough for MVP and tests.
+# Later we can replace with a math "jump-ahead" (O(log n)), but start here.
+func advance(n: int) -> void:
+	if n <= 0:
+		return
+	# Each `_step()` performs one LCG state transition:
+	#   state = state * MULTIPLIER + inc (mod 2^64)
+	# Masking is already handled inside `_step()`.
+	for _i in n:
+		_step()
