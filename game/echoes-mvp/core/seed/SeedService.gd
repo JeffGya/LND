@@ -66,3 +66,38 @@ func rng_for_scope(scope_path: String, stream: int = 54) -> PCG32:
 		var sd: int = SeedBook.derive_for_scope(campaign_seed, scope_path)
 		_cache[k] = PCG32.new_with_seed(sd, stream)
 	return _cache[k]
+	
+# Capture campaign_seed + every cached PRNG's internal state
+func snapshot_state() -> Dictionary:
+	var states := {}
+	for k in _cache.keys():
+		# Each PCG32 exposes get_state(): {"state": int, "inc": int}
+		states[k] = _cache[k].get_state()
+	return {
+		"campaign_seed": campaign_seed,
+		"rng_states": states,
+		"version": 1
+	}
+
+# Restore from a snapshot. Streams are recreated lazily per key and state applied.
+func restore_state(save: Dictionary) -> void:
+	# 1) Reset the service to a clean slate with the same campaign seed
+	var cs := int(save.get("campaign_seed", 0))
+	init_with_campaign(cs)
+
+	# 2) Recreate streams and restore their state
+	var states: Dictionary = save.get("rng_states", {})
+	for k in states.keys():
+		var rng = _ensure_rng_for_key(k)
+		if rng != null:
+			rng.set_state(states[k])
+
+# Internal helper: build stream by cache key prefix
+func _ensure_rng_for_key(k: String) -> PCG32:
+	if k.begins_with("sys|"):
+		return rng_for_system(k.substr(4))
+	elif k.begins_with("realm|"):
+		return rng_for_realm(int(k.substr(6)))
+	elif k.begins_with("scope|"):
+		return rng_for_scope(k.substr(6))
+	return null

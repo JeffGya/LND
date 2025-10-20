@@ -129,6 +129,7 @@ func _ready():
 	# - Changing campaign_seed should change all derived values.
 	
 	_test_seed_service()
+	_test_seed_snapshot()
 
 # --- SeedService Smoke Test ---
 func _test_seed_service() -> void:
@@ -159,3 +160,40 @@ func _test_seed_service() -> void:
 
 # Call this from your _ready() in the test scene after other tests, e.g.:
 # _test_seed_service()
+
+func _test_seed_snapshot() -> void:
+	print("--- SeedService Snapshot/Restore Test ---")
+	var cs: int = 885677476959259660  # your stable campaign seed
+	SeedService.init_with_campaign(cs)
+
+	# Create a couple streams and advance them to non-trivial positions
+	var rc := SeedService.rng_for_system("combat")
+	var re := SeedService.rng_for_system("economy")
+	for i in 3: rc.next_u32()
+	for i in 2: re.next_u32()
+
+	# ✅ Snapshot the entire SeedService BEFORE consuming target values
+	var snap := SeedService.snapshot_state()
+
+	# These are the values we expect to reproduce after restore
+	var target := {
+		"combat": [rc.next_u32(), rc.next_u32()],
+		"economy": [re.next_u32(), re.next_u32()]
+	}
+
+	# Advance more (to prove we *really* rewind)
+	rc.next_u32(); re.next_u32()
+
+	# Restore and fetch same streams again
+	SeedService.restore_state(snap)
+	var rc2 := SeedService.rng_for_system("combat")
+	var re2 := SeedService.rng_for_system("economy")
+	var post := {
+		"combat": [rc2.next_u32(), rc2.next_u32()],
+		"economy": [re2.next_u32(), re2.next_u32()]
+	}
+
+	var ok: bool = (target["combat"] == post["combat"] and target["economy"] == post["economy"])
+	print("targets:", target)
+	print("post:   ", post)
+	print("✅ MATCH" if ok else "❌ MISMATCH")
