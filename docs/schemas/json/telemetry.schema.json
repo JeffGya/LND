@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Telemetry Log",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ring", "cursor", "enabled"],
+  "properties": {
+    "ring": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "cursor": { "type": "integer", "minimum": 0 },
+    "enabled": { "type": "boolean" }
+  }
+}

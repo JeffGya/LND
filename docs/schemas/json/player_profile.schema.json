@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Player Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["keeper_id", "display_name", "options"],
+  "properties": {
+    "keeper_id": { "type": "string", "pattern": "^[a-z0-9_\\-]{3,64}$" },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ui"],
+      "properties": {
+        "ui": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lang", "text_speed"],
+          "properties": {
+            "lang": { "type": "string", "enum": ["en", "nl", "lt", "fr"] },
+            "text_speed": { "type": "integer", "minimum": 0, "maximum": 200 },
+            "theme": { "type": "string", "enum": ["system", "light", "dark"], "default": "system" },
+            "font_scale": { "type": "number", "minimum": 0.8, "maximum": 1.6, "default": 1.0 }
+          }
+        }
+      }
+    }
+  }
+}

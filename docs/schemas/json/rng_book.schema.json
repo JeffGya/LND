@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RNG Book",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["campaign_seed"],
+  "properties": {
+    "campaign_seed": { "type": "string" },
+    "subseeds": { "type": "object", "additionalProperties": { "type": "string" } },
+    "cursors": { "type": "object", "additionalProperties": { "type": "integer" } }
+  }
+}

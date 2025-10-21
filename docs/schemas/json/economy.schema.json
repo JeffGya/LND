@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Economy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ase", "ekwan", "relics", "yields", "sinks"],
+  "properties": {
+    "ase": { "type": "integer", "minimum": 0 },
+    "ekwan": { "type": "integer", "minimum": 0 },
+    "relics": { "type": "array", "items": { "type": "string" } },
+    "yields": { "type": "object", "properties": { "daily_ase": { "type": "integer" } } },
+    "sinks": { "type": "object" }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hero Roster",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["active", "recovering", "retired", "fallen"],
+  "properties": {
+    "active": { "type": "array", "items": { "$ref": "#/$defs/Hero" } },
+    "recovering": { "type": "array", "items": { "$ref": "#/$defs/Hero" } },
+    "retired": { "type": "array", "items": { "$ref": "#/$defs/Hero" } },
+    "fallen": { "type": "array", "items": { "$ref": "#/$defs/Hero" } }
+  },
+  "$defs": {
+    "Hero": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "traits", "stats"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 },
+        "traits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["courage", "ambition", "empathy", "wisdom", "discipline", "resolve"],
+          "properties": {
+            "courage": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "ambition": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "empathy": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "wisdom": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "discipline": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "resolve": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "stats": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hp", "morale", "fear"],
+          "properties": {
+            "hp": { "type": "integer", "minimum": 0 },
+            "morale": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "fear": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "conditions": { "type": "array", "items": { "type": "string" } },
+        "bonds": { "type": "array", "items": { "type": "string" } },
+        "lineage_id": { "type": "string" },
+        "history": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
