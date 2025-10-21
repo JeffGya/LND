@@ -17,7 +17,6 @@
     "research_crafting",
     "legacy",
     "telemetry_log",
-    "rng_book",
     "content_hash",
     "integrity"
   ],
@@ -35,7 +34,6 @@
     "research_crafting": { "$ref": "./research_crafting.schema.json" },
     "legacy": { "$ref": "./legacy.schema.json" },
     "telemetry_log": { "$ref": "./telemetry.schema.json" },
-    "rng_book": { "$ref": "./rng_book.schema.json" },
     "content_hash": { "type": "string" },
     "integrity": {
       "type": "object",

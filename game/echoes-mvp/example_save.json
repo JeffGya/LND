@@ -1,0 +1,46 @@
+{
+    "$schema": "./docs/schemas/json/root.schema.json",
+    "schema_version": "13.0.0",
+    "build_id": "0.1.0-mvp",
+    "created_utc": "2025-10-21T12:00:00Z",
+    "last_saved_utc": "2025-10-21T12:30:00Z",
+
+    "player_profile": {
+        "keeper_id": "kp_demo",
+        "display_name": "Keeper",
+        "options": {"ui": {"lang": "en", "text_speed": 30, "theme": "system", "font_scale": 1.0}}
+    },
+
+    "campaign_run": {
+        "mode": "MVP",
+        "cycle_index": 1,
+        "realm_selection": [],
+        "realm_order": [],
+        "rng_book": {"campaign_seed": "A2B9-4D10", "subseeds": {}, "cursors": {}}
+    },
+    "sanctum_state": {
+        "wings_unlocked": [],
+        "emotions": {"faith": 50, "harmony": 55, "favor": 10},
+        "upgrades": {},
+        "queues": {"healing": [], "research": [], "crafting": []}
+    },
+    "hero_roster": {"active": [], "recovering": [], "retired": [], "fallen": []},
+    "realm_states": [],
+    "economy": {
+        "ase": 0,
+        "ekwan": 0,
+        "relics": [],
+        "yields": {"daily_ase": 0},
+        "sinks": {}
+    },
+    "research_crafting": {
+        "research_tree": {"faith": [], "war": [], "knowledge": []},
+        "active_projects": [],
+        "known_recipes": []
+    },
+    "legacy": {"fragments": [], "lineages": [], "memorials": []},
+    "telemetry_log": {"ring":[], "cursor": 0, "enabled": true},
+    "rng_book": {"campaign_seed": "A2B9-4D10", "subseeds": {}, "cursors": {}},
+    "content_hash": "",
+    "integrity": {"signed": false}
+}
