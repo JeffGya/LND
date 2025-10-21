@@ -84,6 +84,24 @@ func _ready() -> void:
 	else:
 		print("(Skip corruption test — no .bak yet)")
 
+	# 11) MIGRATION TESTS (Task 7) — SAFE: uses a temp path and falls back to .bak on failure
+	var mig_ok_all: bool = true
+	var tmp_ver_path := "user://echoes.version_test"
+	# Build a future-major version string based on what's on disk
+	var current_on_disk := _read_schema_version(SAVE_PATH)
+	var future_major := _bump_major(current_on_disk)
+	# Write a temp file with future-major schema_version and try to load it (should fallback to .bak and succeed)
+	var wrote_tmp := _write_schema_version_to(SAVE_PATH, tmp_ver_path, future_major)
+	if wrote_tmp:
+		var ok_future_major := SaveService.load_game(tmp_ver_path)
+		print("Migration: future major (", future_major, ") fallback →", ("PASS" if ok_future_major else "FAIL"))
+		mig_ok_all = mig_ok_all and ok_future_major
+		# Clean up temp file
+		if FileAccess.file_exists(tmp_ver_path):
+			DirAccess.remove_absolute(tmp_ver_path)
+	else:
+		print("Migration test skipped: couldn't write temp versioned file")
+
 	# Summary
 	print("=== DoD Summary:")
 	print("Determinism:", rng_ok)
@@ -149,3 +167,43 @@ func _deep_equal_ignore_meta(pre: Dictionary, post: Dictionary) -> bool:
 	var sa: String = JSON.stringify(a)
 	var sb: String = JSON.stringify(b)
 	return sa == sb
+
+
+# --- MIGRATION TEST HELPERS ---
+
+func _read_schema_version(path: String) -> String:
+	if not FileAccess.file_exists(path):
+		return "0.0.0"
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return "0.0.0"
+	var txt := f.get_as_text(); f.close()
+	var parsed: Variant = JSON.parse_string(txt)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return "0.0.0"
+	return String((parsed as Dictionary).get("schema_version", "0.0.0"))
+
+func _bump_major(ver: String) -> String:
+	var parts := ver.split(".")
+	if parts.size() < 3:
+		return "1.0.0"
+	var maj: int = int(parts[0]) + 1
+	return String.num_int64(maj) + ".0.0"
+
+func _write_schema_version_to(src_path: String, dst_path: String, new_ver: String) -> bool:
+	# Build from the current in-memory snapshot to avoid read/parse failures
+	var root: Dictionary = SaveService.snapshot()
+	root["schema_version"] = new_ver
+	var out_txt: String = JSON.stringify(root, "\t")
+	# Write atomically: write to a temp, then rename
+	var tmp_path := dst_path + ".tmp"
+	if FileAccess.file_exists(tmp_path):
+		DirAccess.remove_absolute(tmp_path)
+	var wf := FileAccess.open(tmp_path, FileAccess.WRITE)
+	if wf == null:
+		return false
+	wf.store_string(out_txt)
+	wf.flush(); wf.close()
+	if FileAccess.file_exists(dst_path):
+		DirAccess.remove_absolute(dst_path)
+	return DirAccess.rename_absolute(tmp_path, dst_path) == OK

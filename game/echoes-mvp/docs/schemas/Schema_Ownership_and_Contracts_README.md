@@ -46,7 +46,6 @@
 - **research_crafting**: `research_tree`, `active_projects[]`, `known_recipes[]`  
 - **legacy**: `fragments[]`, `lineages[]`, `memorials[]`  
 - **telemetry_log**: `ring[]`, `cursor`, `enabled`  
-- **rng_book**: `campaign_seed` (top), optional `subseeds{system→seed}`, optional `cursors{system→pcg_state}` when mid-run  
 
 ---
 
@@ -83,3 +82,32 @@
   "integrity": { "signed": false }
 }
 ```
+
+---
+
+## Versioning & Migrations (SemVer, runtime policy)
+
+**Single source of truth:** `SCHEMA_VERSION` is defined in `core/save/SaveService.gd` and written into every save under `schema_version`. The loader compares the incoming version against the code’s `SCHEMA_VERSION` and applies the rules below.
+
+### SemVer rules
+- **MAJOR** (breaking shape/meaning changes):
+  - Different MAJOR in the save → **load is blocked** unless a specific migrator exists.
+  - The current migrator stub returns an empty object to signal “blocked,” and the loader falls back to `.bak`.
+- **MINOR** (additive, backward‑compatible):
+  - Older MINOR (same MAJOR) → **allowed with a warning**; defaults for new optional fields are injected (e.g., `telemetry_log.enabled`, `cursor`, `ring`).
+- **PATCH** (no shape change):
+  - Always accepted silently.
+
+### Determinism guarantees
+- `campaign_run.rng_book` (campaign seed, subseeds, cursors) is **never modified** by generic migrations. Any change to seeds/cursors requires a dedicated migrator and a determinism test.
+
+### Loader flow (SaveService)
+1. Parse JSON → validate required modules & ranges.
+2. `migrate(save)` → may enrich optional fields, or **block** (future/different MAJOR).
+3. If blocked or invalid after migration → try `.bak`. If that also fails → load aborts.
+4. On success → `_apply_unpack()` restores runtime state.
+
+### Bumping the version
+- Bump `SCHEMA_VERSION` in `core/save/SaveService.gd` (and optionally `BUILD_ID`).
+- Update example JSON in this document to match.
+- For MINOR bumps, consider adding a one‑line note of what defaults are injected.

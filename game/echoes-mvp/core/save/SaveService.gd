@@ -125,8 +125,17 @@ func load_game(path: String = SAVE_PATH) -> bool:
 	if not bool(check.get("ok", false)):
 		push_warning("[SaveService] load_game: invalid save: %s; trying backup…" % String(check.get("message", "")))
 		return _try_load_backup()
-	# Migrate (no-op for now) and apply
+	# Migrate, check migration block, re-validate before unpack
 	save_dict = migrate(save_dict)
+	# If migration blocked (returns empty dict) fall back to backup
+	if save_dict.size() == 0:
+		push_warning("[SaveService] load_game: migration blocked; trying backup…")
+		return _try_load_backup()
+	# Optional: re-validate migrated content before unpacking
+	var mcheck: Dictionary = validate(save_dict)
+	if not bool(mcheck.get("ok", false)):
+		push_warning("[SaveService] load_game: migrated save invalid: %s; trying backup…" % String(mcheck.get("message", "")))
+		return _try_load_backup()
 	if DEBUG_SAVE:
 		push_warning("[SaveService] load_game: applying unpack…")
 	_apply_unpack(save_dict)
@@ -278,8 +287,43 @@ func _validate_rng_book(rb: Dictionary) -> Dictionary:
 			return {"ok": false, "message": "rng_book.cursors[%s] must be >= 0" % String(key)}
 	return {"ok": true, "message": "OK"}
 
-## Migrations: no-op for v0.1 (kept for future SemVer upgrades)
+## Migrations: versioning & migration stub (Task 7)
 func migrate(root: Dictionary) -> Dictionary:
+	# --- Versioning and migration stub (Task 7) ---
+	var incoming_version_str: String = String(root.get("schema_version", "0.0.0"))
+	var incoming_parts: Array = incoming_version_str.split(".")
+	var current_parts: Array = SCHEMA_VERSION.split(".")
+	if incoming_parts.size() < 3:
+		push_warning("[Migrate] Invalid schema_version format in save: %s" % incoming_version_str)
+		return root
+
+	var incoming_major: int = int(incoming_parts[0])
+	var incoming_minor: int = int(incoming_parts[1])
+	var current_major: int = int(current_parts[0])
+	var current_minor: int = int(current_parts[1])
+
+	# Future or higher-major version → block load
+	if incoming_major > current_major:
+		push_warning("[Migrate] Save from future major version (%s > %s). Load blocked." % [incoming_version_str, SCHEMA_VERSION])
+		return {}
+	if incoming_major < current_major:
+		push_warning("[Migrate] Save from older major version (%s < %s). Requires manual migrator." % [incoming_version_str, SCHEMA_VERSION])
+		return {}
+
+	# Same major, older minor → allow but warn and enrich missing optional fields
+	if incoming_minor < current_minor:
+		push_warning("[Migrate] Minor schema mismatch (%s < %s). Applying default enrichment." % [incoming_version_str, SCHEMA_VERSION])
+		# Inject optional defaults if missing (safe additions only)
+		var tel: Dictionary = root.get("telemetry_log", {}) as Dictionary
+		if not tel.has("enabled"):
+			tel["enabled"] = true
+		if not tel.has("cursor"):
+			tel["cursor"] = 0
+		if not tel.has("ring"):
+			tel["ring"] = []
+		root["telemetry_log"] = tel
+
+	# Otherwise same version (or same major + same minor) → pass through
 	return root
 
 # -------------------------------------------------------------
@@ -345,15 +389,24 @@ func _try_load_backup() -> bool:
 			var text: String = bf.get_as_text(); bf.close()
 			var parsed: Variant = JSON.parse_string(text)
 			if typeof(parsed) == TYPE_DICTIONARY:
-				var check: Dictionary = validate(parsed as Dictionary)
-				if bool(check.get("ok", false)):
-					_apply_unpack(parsed as Dictionary)
-					_created_utc = (parsed as Dictionary).get("created_utc", "")
-					_last_saved_utc = (parsed as Dictionary).get("last_saved_utc", "")
-					_content_hash = (parsed as Dictionary).get("content_hash", "")
-					_integrity_signed = ((parsed as Dictionary).get("integrity", {}) as Dictionary).get("signed", false)
-					if DEBUG_SAVE: push_warning("[SaveService] _try_load_backup: success")
-					return true
+				var dict: Dictionary = parsed as Dictionary
+				var check: Dictionary = validate(dict)
+				if not bool(check.get("ok", false)):
+					return false
+				# Migrate backup too; if blocked or invalid after migration, fail
+				dict = migrate(dict)
+				if dict.size() == 0:
+					return false
+				var mcheck: Dictionary = validate(dict)
+				if not bool(mcheck.get("ok", false)):
+					return false
+				_apply_unpack(dict)
+				_created_utc = dict.get("created_utc", "")
+				_last_saved_utc = dict.get("last_saved_utc", "")
+				_content_hash = dict.get("content_hash", "")
+				_integrity_signed = (dict.get("integrity", {}) as Dictionary).get("signed", false)
+				if DEBUG_SAVE: push_warning("[SaveService] _try_load_backup: success")
+				return true
 	push_warning("[SaveService] _try_load_backup: missing or invalid")
 	return false
 
