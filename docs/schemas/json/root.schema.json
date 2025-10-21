@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Echoes Save Root",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "build_id",
+    "created_utc",
+    "last_saved_utc",
+    "player_profile",
+    "campaign_run",
+    "sanctum_state",
+    "hero_roster",
+    "realm_states",
+    "economy",
+    "research_crafting",
+    "legacy",
+    "telemetry_log",
+    "rng_book",
+    "content_hash",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "build_id": { "type": "string" },
+    "created_utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "last_saved_utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "player_profile": { "$ref": "./player_profile.schema.json" },
+    "campaign_run": { "$ref": "./campaign_run.schema.json" },
+    "sanctum_state": { "$ref": "./sanctum_state.schema.json" },
+    "hero_roster": { "$ref": "./hero_roster.schema.json" },
+    "realm_states": { "$ref": "./realm_states.schema.json" },
+    "economy": { "$ref": "./economy.schema.json" },
+    "research_crafting": { "$ref": "./research_crafting.schema.json" },
+    "legacy": { "$ref": "./legacy.schema.json" },
+    "telemetry_log": { "$ref": "./telemetry.schema.json" },
+    "rng_book": { "$ref": "./rng_book.schema.json" },
+    "content_hash": { "type": "string" },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signed"],
+      "properties": { "signed": { "type": "boolean" } }
+    }
+  }
+}

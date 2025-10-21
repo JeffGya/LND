@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sanctum State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wings_unlocked", "emotions", "upgrades", "queues"],
+  "properties": {
+    "wings_unlocked": { "type": "array", "items": { "type": "string" } },
+    "emotions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["faith", "harmony", "favor"],
+      "properties": {
+        "faith": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "harmony": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "favor": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "upgrades": { "type": "object" },
+    "queues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["healing", "research", "crafting"],
+      "properties": {
+        "healing": { "type": "array", "items": { "$ref": "#/$defs/QueueItem" } },
+        "research": { "type": "array", "items": { "$ref": "#/$defs/QueueItem" } },
+        "crafting": { "type": "array", "items": { "$ref": "#/$defs/QueueItem" } }
+      }
+    }
+  },
+  "$defs": {
+    "QueueItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_utc", "end_utc", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "start_utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+        "end_utc": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+        "status": { "type": "string", "enum": ["pending", "running", "done"] }
+      }
+    }
+  }
+}

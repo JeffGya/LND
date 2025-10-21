@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Campaign Run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "cycle_index", "realm_selection", "realm_order", "rng_book"],
+  "properties": {
+    "mode": { "type": "string", "enum": ["MVP", "Standard", "IronKeeper"] },
+    "cycle_index": { "type": "integer", "minimum": 0 },
+    "realm_selection": { "type": "array", "items": { "type": "string" } },
+    "realm_order": { "type": "array", "items": { "type": "string" } },
+    "rng_book": { "$ref": "./rng_book.schema.json" }
+  }
+}
