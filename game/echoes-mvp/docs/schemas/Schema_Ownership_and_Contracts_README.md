@@ -83,11 +83,3 @@
   "integrity": { "signed": false }
 }
 ```
-
----
-
-## Next actions
-
-- Create this file: `docs/schemas/README.md` (paste this content).  
-- Make a 1-page **Ownership Matrix** print-out for quick desk reference.  
-- Then move to subtask **2) Minimal JSON Schemas (v0.1)** and generate one `.schema.json` per module using these fields + ranges.
