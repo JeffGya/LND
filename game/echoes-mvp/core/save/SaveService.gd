@@ -28,7 +28,7 @@ const DEBUG_SAVE := false
 # Cached root metadata (helps preserve created_utc across saves)
 var _created_utc: String = ""
 var _last_saved_utc: String = ""
-var _content_hash: String = ""   # (optional) leave empty for now
+var _content_hash: String = ""   # SHA-256 of JSON with content_hash cleared
 var _integrity_signed: bool = false
 
 # -------------------------------------------------------------
@@ -74,6 +74,13 @@ func save_game(path: String = SAVE_PATH) -> bool:
 	# Bump timestamp before validation so it’s included in the JSON
 	_last_saved_utc = _now_iso8601_utc()
 	root["last_saved_utc"] = _last_saved_utc
+
+	# Compute content hash over the JSON with an empty content_hash field to avoid self-reference
+	var to_hash: Dictionary = _hash_view(root)
+	to_hash["content_hash"] = ""
+	var json_for_hash: String = _canonical_string(to_hash)
+	_content_hash = _compute_content_hash(json_for_hash)
+	root["content_hash"] = _content_hash
 
 	var check: Dictionary = validate(root)
 	if not bool(check.get("ok", false)):
@@ -124,6 +131,10 @@ func load_game(path: String = SAVE_PATH) -> bool:
 	var check: Dictionary = validate(save_dict)
 	if not bool(check.get("ok", false)):
 		push_warning("[SaveService] load_game: invalid save: %s; trying backup…" % String(check.get("message", "")))
+		return _try_load_backup()
+	# Verify content hash if present
+	if not _verify_content_hash(save_dict):
+		push_warning("[SaveService] load_game: content hash mismatch; trying backup…")
 		return _try_load_backup()
 	# Migrate, check migration block, re-validate before unpack
 	save_dict = migrate(save_dict)
@@ -330,20 +341,44 @@ func migrate(root: Dictionary) -> Dictionary:
 # Internal helpers
 # -------------------------------------------------------------
 func _assemble_root() -> Dictionary:
+	# Pack modules first so we can derive a replay_header snapshot
+	var pp: Dictionary = PlayerProfileIO.pack_current()
+	var cr: Dictionary = CampaignRunIO.pack_current()
+	var sc: Dictionary = SanctumIO.pack_current()
+	var hr: Dictionary = HeroesIO.pack_current()
+	var rs: Array = RealmsIO.pack_current()
+	var em: Dictionary = EconomyIO.pack_current()
+	var rc: Dictionary = ResearchCraftingIO.pack_current()
+	var lg: Dictionary = LegacyIO.pack_current()
+	var tl: Dictionary = TelemetryIO.pack_current()
+
+	# Build a lightweight replay header for external tools and quick checks
+	var rng_book: Dictionary = (cr.get("rng_book", {}) as Dictionary)
+	var cursors: Dictionary = (rng_book.get("cursors", {}) as Dictionary)
+	var realm_order: Array = (cr.get("realm_order", []) as Array)
+	var replay_header: Dictionary = {
+		"campaign_seed": String(rng_book.get("campaign_seed", "")),
+		"realm_order": realm_order,
+		"build_id": BUILD_ID,
+		"schema_version": SCHEMA_VERSION,
+		"at_cursor": cursors
+	}
+
 	return {
 		"schema_version": SCHEMA_VERSION,
 		"build_id": BUILD_ID,
 		"created_utc": _created_utc if _created_utc != "" else _now_iso8601_utc(),
 		"last_saved_utc": _last_saved_utc,
-		"player_profile": PlayerProfileIO.pack_current(),
-		"campaign_run": CampaignRunIO.pack_current(),
-		"sanctum_state": SanctumIO.pack_current(),
-		"hero_roster": HeroesIO.pack_current(),
-		"realm_states": RealmsIO.pack_current(),
-		"economy": EconomyIO.pack_current(),
-		"research_crafting": ResearchCraftingIO.pack_current(),
-		"legacy": LegacyIO.pack_current(),
-		"telemetry_log": TelemetryIO.pack_current(),
+		"player_profile": pp,
+		"campaign_run": cr,
+		"sanctum_state": sc,
+		"hero_roster": hr,
+		"realm_states": rs,
+		"economy": em,
+		"research_crafting": rc,
+		"legacy": lg,
+		"telemetry_log": tl,
+		"replay_header": replay_header,
 		"content_hash": _content_hash,
 		"integrity": { "signed": _integrity_signed }
 	}
@@ -390,6 +425,9 @@ func _try_load_backup() -> bool:
 			var parsed: Variant = JSON.parse_string(text)
 			if typeof(parsed) == TYPE_DICTIONARY:
 				var dict: Dictionary = parsed as Dictionary
+				# Verify content hash if present; if mismatch, treat backup as invalid
+				if not _verify_content_hash(dict):
+					return false
 				var check: Dictionary = validate(dict)
 				if not bool(check.get("ok", false)):
 					return false
@@ -409,6 +447,80 @@ func _try_load_backup() -> bool:
 				return true
 	push_warning("[SaveService] _try_load_backup: missing or invalid")
 	return false
+
+# -------------------------------------------------------------
+# Hash view: exclude observational blocks that can vary across roundtrips
+# -------------------------------------------------------------
+func _hash_view(full_root: Dictionary) -> Dictionary:
+	var view: Dictionary = full_root.duplicate(true)
+	# Exclude non-authoritative/observational blocks from integrity hash
+	view.erase("telemetry_log")
+	view.erase("replay_header")
+	return view
+
+# -------------------------------------------------------------
+# Canonical JSON for hashing (stable across parse/stringify)
+# -------------------------------------------------------------
+func _canonicalize(value: Variant) -> Variant:
+	var t := typeof(value)
+	if t == TYPE_DICTIONARY:
+		var src: Dictionary = value as Dictionary
+		var keys: Array = src.keys()
+		keys.sort() # lexicographic key order
+		var dst: Dictionary = {}
+		for k in keys:
+			dst[k] = _canonicalize(src.get(k))
+		return dst
+	elif t == TYPE_ARRAY:
+		var out: Array = []
+		for item in (value as Array):
+			out.append(_canonicalize(item))
+		return out
+	elif t == TYPE_FLOAT:
+		# 🔽 normalize whole-number floats to ints so 0.0 ≡ 0 in canonical JSON
+		var f := float(value)
+		var fi := int(f)
+		if abs(f - float(fi)) < 0.0000001:
+			return fi
+		else:
+			return f
+	else:
+		return value
+
+func _canonical_string(dict: Dictionary) -> String:
+	var canon: Dictionary = _canonicalize(dict) as Dictionary
+	# No pretty indent: minimize whitespace variance
+	return JSON.stringify(canon)
+
+# -------------------------------------------------------------
+# Content hash helpers
+# -------------------------------------------------------------
+func _compute_content_hash(text: String) -> String:
+	# Prefer SHA-256 via HashingContext (portable). If you have xxHash64 available,
+	# you can swap this implementation.
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(text.to_utf8_buffer())
+	var digest: PackedByteArray = ctx.finish()
+	# Hex encode
+	var hex := ""
+	for b in digest:
+		hex += "%02x" % b
+	return hex
+
+func _verify_content_hash(dict: Dictionary) -> bool:
+	# If the file doesn’t have a content_hash, accept it (older saves)
+	if not dict.has("content_hash"):
+		return true
+	var stored: String = String(dict.get("content_hash", ""))
+	if stored == "":
+		return true
+	# Compute hash over the same structure with empty content_hash
+	var tmp: Dictionary = _hash_view(dict)
+	tmp["content_hash"] = ""
+	var json_for_hash: String = _canonical_string(tmp)
+	var calc: String = _compute_content_hash(json_for_hash)
+	return stored == calc
 
 func _now_iso8601_utc() -> String:
 	# Build an ISO8601 UTC string matching the schema regex: YYYY-MM-DDTHH:MM:SSZ

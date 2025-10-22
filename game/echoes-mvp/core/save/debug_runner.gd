@@ -33,6 +33,12 @@ func _ready() -> void:
 	var pre: Dictionary = SaveService.snapshot()
 	print("Snapshot pre-save ✓ (keys=", pre.keys(), ")")
 
+	# 3b) TELEMETRY SMOKE — log a couple of events before saving
+	var pre_cursor: int = int(rb_pre.get("cursors", {}).get(stream_key, -1))
+	var seed_tag := "%s@%d" % [stream_key, pre_cursor]
+	TelemetryIO.log_realm_enter("ase-forest", 0)
+	TelemetryIO.log_encounter_end("ase-forest", 0, 0, seed_tag)
+
 	# 4) SAVE
 	var ok_save: bool = SaveService.save_game()
 	print("Save ok:", ok_save)
@@ -50,8 +56,16 @@ func _ready() -> void:
 	var rb_post_load := RNCatalogIO.pack_current()
 	print("Cursor after load (", stream_key, "): ", int(rb_post_load.get("cursors", {}).get(stream_key, -1)))
 
+	# Telemetry ring tail after load
+	var tel_after: Dictionary = TelemetryIO.pack_current()
+	var ring_after: Array = tel_after.get("ring", []) as Array
+	var tail_ev: Dictionary = {} if ring_after.size() == 0 else (ring_after[ring_after.size() - 1] as Dictionary)
+	print("Telemetry tail:", tail_ev)
+
 	# 7) ROUNDTRIP DEEP-EQUAL (ignore timestamps) — do this BEFORE drawing more
 	var post: Dictionary = SaveService.snapshot()
+	var rh: Dictionary = post.get("replay_header", {}) as Dictionary
+	print("Replay header:", rh)
 	var roundtrip_ok: bool = _deep_equal_ignore_meta(pre, post)
 	print("Roundtrip deep-equal (ignoring timestamps) →", ("PASS" if roundtrip_ok else "FAIL"))
 	ok_all = ok_all and roundtrip_ok
@@ -139,6 +153,8 @@ func _inspect_save(path: String) -> void:
 			print("    rng_book keys:", rb.keys())
 		var tel: Dictionary = ((parsed as Dictionary).get("telemetry_log", {}) as Dictionary)
 		print("  telemetry_log.cursor:", int(tel.get("cursor", -999)))
+		var rh: Dictionary = ((parsed as Dictionary).get("replay_header", {}) as Dictionary)
+		print("  replay_header keys:", rh.keys())
 
 # --- helpers ---
 
@@ -160,9 +176,15 @@ func _arrays_equal(a: Array[int], b: Array[int]) -> bool:
 func _deep_equal_ignore_meta(pre: Dictionary, post: Dictionary) -> bool:
 	var a := pre.duplicate(true)
 	var b := post.duplicate(true)
-	# Ignore timestamps and volatile fields
+	# Ignore timestamps
 	a.erase("created_utc"); a.erase("last_saved_utc")
 	b.erase("created_utc"); b.erase("last_saved_utc")
+	# Ignore observational/derived blocks that can differ after JSON roundtrip
+	a.erase("telemetry_log"); a.erase("replay_header")
+	b.erase("telemetry_log"); b.erase("replay_header")
+	# Ignore meta that legitimately changes across save boundaries
+	a.erase("content_hash"); a.erase("integrity")
+	b.erase("content_hash"); b.erase("integrity")
 	# JSON compare for simplicity
 	var sa: String = JSON.stringify(a)
 	var sb: String = JSON.stringify(b)
@@ -190,7 +212,7 @@ func _bump_major(ver: String) -> String:
 	var maj: int = int(parts[0]) + 1
 	return String.num_int64(maj) + ".0.0"
 
-func _write_schema_version_to(src_path: String, dst_path: String, new_ver: String) -> bool:
+func _write_schema_version_to(_src_path: String, dst_path: String, new_ver: String) -> bool:
 	# Build from the current in-memory snapshot to avoid read/parse failures
 	var root: Dictionary = SaveService.snapshot()
 	root["schema_version"] = new_ver

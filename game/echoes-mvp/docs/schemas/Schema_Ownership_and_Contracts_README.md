@@ -111,3 +111,58 @@
 - Bump `SCHEMA_VERSION` in `core/save/SaveService.gd` (and optionally `BUILD_ID`).
 - Update example JSON in this document to match.
 - For MINOR bumps, consider adding a one‑line note of what defaults are injected.
+
+---
+
+## Telemetry Log & Replay Header (v13.0.0 runtime format)
+
+**Purpose:**  
+Provide a bounded event log for lightweight observability and a small replay header
+that external tools can use to reproduce deterministic runs.
+
+### telemetry_log
+
+- **Shape**
+  ```json
+  {
+    "ring": [ { "t": "encounter_end", "utc": "2025-10-22T12:14:42Z", "realm": "ase-forest", "stage": 0, "encounter": 0, "seed": "combat/battle/alpha@10", "notes": "ok" } ],
+    "cursor": 2,
+    "enabled": true
+  }
+  ```
+- **Behavior**
+  - Fixed capacity = 256 events (oldest overwritten when full).  
+  - `cursor` is the next write index → monotonic counter.  
+  - `enabled` = false disables writes but preserves existing ring.  
+  - Events are append-only; logging never mutates game state.
+
+### replay_header
+
+Written once per save by `SaveService` for debugging and replay indexing.
+
+```json
+{
+  "campaign_seed": "2730052880",
+  "realm_order": [],
+  "build_id": "0.1.0-mvp",
+  "schema_version": "13.0.0",
+  "at_cursor": { "combat/battle/alpha": 10 }
+}
+```
+
+- **Purpose:** Metadata for deterministic replays and QA audits.  
+- **Authorship:** `SaveService` (assembled from `campaign_run.rng_book` and `CampaignRunIO`).  
+- **Read-only:** ignored on load; regenerated on each save.  
+- **Compatibility:** Additive (safe for MINOR version bumps).
+
+### Validation Rules
+
+- `ring` must be an array of objects.  
+- `cursor` must be ≥ 0 (integer-like).  
+- `enabled` must be boolean or 0/1.  
+- `replay_header` is optional; if present, keys should match the shape above.
+
+### Determinism Notes
+
+Telemetry and replay_header are *observational only* and are excluded from
+round-trip equality tests. They record, never influence, simulation outcomes.
