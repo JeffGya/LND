@@ -73,7 +73,29 @@ static func _validate(d: Dictionary) -> Dictionary:
 
 	if typeof(d.rng_book) != TYPE_DICTIONARY:
 		return {"ok": false, "message": "rng_book must be object"}
-	if not (d.rng_book as Dictionary).has("campaign_seed"):
-		return {"ok": false, "message": "rng_book.campaign_seed missing"}
+	var rb := d.rng_book as Dictionary
+	for k in ["campaign_seed", "subseeds", "cursors"]:
+		if not rb.has(k):
+			return {"ok": false, "message": "rng_book.%s missing" % k}
+
+	# campaign_seed can be int or string (schema allows either; UI may render hex)
+	var cs_t := typeof(rb.campaign_seed)
+	if cs_t != TYPE_INT and cs_t != TYPE_STRING:
+		return {"ok": false, "message": "rng_book.campaign_seed must be int or string"}
+
+	# subseeds must be a Dictionary<String, String>
+	if typeof(rb.subseeds) != TYPE_DICTIONARY:
+		return {"ok": false, "message": "rng_book.subseeds must be object"}
+	for sk in (rb.subseeds as Dictionary).keys():
+		if typeof(sk) != TYPE_STRING or typeof((rb.subseeds as Dictionary)[sk]) != TYPE_STRING:
+			return {"ok": false, "message": "rng_book.subseeds must map String->String"}
+
+	# cursors must be a Dictionary<String, Int>=0
+	if typeof(rb.cursors) != TYPE_DICTIONARY:
+		return {"ok": false, "message": "rng_book.cursors must be object"}
+	for ck in (rb.cursors as Dictionary).keys():
+		var cv = (rb.cursors as Dictionary)[ck]
+		if typeof(ck) != TYPE_STRING or typeof(cv) != TYPE_INT or int(cv) < 0:
+			return {"ok": false, "message": "rng_book.cursors must map String->Int>=0"}
 
 	return {"ok": true, "message": "OK"}

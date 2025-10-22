@@ -8,6 +8,8 @@ extends Control
 @onready var load_btn: Button        = $Frame/VBox/RowA/LoadBtn
 @onready var validate_btn: Button    = $Frame/VBox/RowA/ValidateBtn
 @onready var snap_btn: Button        = $Frame/VBox/RowB/SnapBtn
+const Seedbook = preload("res://core/seed/Seedbook.gd")
+@onready var show_seeds_btn: Button = get_node_or_null("Frame/VBox/RowB/ShowSeedsBtn")
 
 const SAVE_PATH := "user://echoes.save"
 const STREAM_KEY := "combat/battle/alpha"
@@ -20,6 +22,8 @@ func _ready() -> void:
 	validate_btn.pressed.connect(_on_validate_pressed)
 	snap_btn.pressed.connect(_on_snapshot_pressed)
 	tel_check.toggled.connect(_on_tel_toggled)
+	if show_seeds_btn:
+		show_seeds_btn.pressed.connect(_on_show_seeds_pressed)
 	_append("[color=#6cf]Panel ready[/color].")
 
 func _on_tel_toggled(v: bool) -> void:
@@ -87,6 +91,29 @@ func _show_file_info(path: String) -> void:
 		var tel: Dictionary = d.get("telemetry_log", {}) as Dictionary
 		_append("on-disk replay_header keys=" + str((rh as Dictionary).keys()))
 		_append("on-disk telemetry.cursor=" + str((tel as Dictionary).get("cursor", -1)))
+
+func _on_show_seeds_pressed() -> void:
+	_render_seed_info()
+
+func _render_seed_info() -> void:
+	var info: Dictionary = Seedbook.get_all_seed_info()
+	_append("[b]Campaign Seed[/b]: %s" % String(info.get("campaign_seed", "")))
+	_append("[b]Realm Seeds[/b]:")
+	for r in (info.get("realms", []) as Array):
+		var rd := r as Dictionary
+		_append(" - %s: %s (stage=%d)" % [String(rd.get("realm_id","?")), String(rd.get("realm_seed","")), int(rd.get("stage_index",0))])
+	_append("[b]Stage Seeds[/b]:")
+	for s in (info.get("stages", []) as Array):
+		var sd := s as Dictionary
+		_append(" - %s[%d]: %s" % [String(sd.get("realm_id","?")), int(sd.get("stage_index",0)), String(sd.get("stage_seed",""))])
+	_append("[b]Cursors[/b]:")
+	for k in (info.get("cursors", {}) as Dictionary).keys():
+		_append(" - %s: %d" % [String(k), int((info.get("cursors", {}) as Dictionary)[k])])
+	# optional telemetry hook
+	if Engine.has_singleton("Telemetry"):
+		var t = Engine.get_singleton("Telemetry")
+		if t and t.has_method("log"):
+			t.log("seed_info", info)
 
 func _append(line: String) -> void:
 	out_box.append_text("\n" + line)

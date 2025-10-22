@@ -3,10 +3,7 @@
 # They concatenate a stable "namespace string" and feed it into XXHash64.xxh64_string
 # to get a 64-bit deterministic integer you can use as a seed for PCG32.
 
-class_name SeedBook
 extends RefCounted
-
-const XXHash64 = preload("res://core/seed/XXHash64.gd")
 
 # --- Small helper: canonicalize user/context text so "Economy", " economy ", "ECONOMY"
 # all hash the same. This avoids surprising differences from casing/whitespace.
@@ -46,3 +43,66 @@ static func derive_for_scope(campaign_seed: int, scope_path: String) -> int:
 static func derive_with_salt(campaign_seed: int, scope_key: String, salt: String) -> int:
 	var buf := "salt|" + str(campaign_seed) + "|" + _canon(scope_key) + "|" + _canon(salt)
 	return XXHash64.xxh64_string(buf)
+
+# =============================================================
+# Seed inspector accessors (Step 2)
+# Read-only wrappers that delegate to RNCatalogIO and SaveService
+# =============================================================
+
+static func _realm_key(realm_id: String) -> String:
+	return "realm:%s" % realm_id
+
+static func _stage_key(realm_id: String, stage_index: int) -> String:
+	return "stage:%s:%d" % [realm_id, stage_index]
+
+## Canonical campaign seed accessor (persisted as String)
+static func get_campaign_seed() -> String:
+	return RNCatalogIO.get_campaign_seed()
+
+## Deterministic realm seed; ensures the realm stream exists and returns its subseed
+static func get_realm_seed(realm_id: String) -> String:
+	var key := _realm_key(realm_id)
+	RNCatalogIO.ensure_stream(key)
+	return RNCatalogIO.get_subseed(key, "")
+
+## Deterministic stage seed; derived from the realm stream
+static func get_stage_seed(realm_id: String, stage_index: int) -> String:
+	var parent_key := _realm_key(realm_id)
+	var key := _stage_key(realm_id, stage_index)
+	RNCatalogIO.ensure_stream(parent_key)
+	RNCatalogIO.ensure_stream(key, parent_key)
+	return RNCatalogIO.get_subseed(key, "")
+
+## Snapshot of all known PRNG cursors (stream -> int)
+static func get_cursors() -> Dictionary:
+	return (RNCatalogIO.pack_current().get("cursors", {}) as Dictionary).duplicate(true)
+
+## Convenience bundle for /seed_info printing
+static func get_all_seed_info() -> Dictionary:
+	var snap := SaveService.snapshot()
+	var info := {
+		"campaign_seed": get_campaign_seed(),
+		"realms": [],
+		"stages": [],
+		"cursors": get_cursors()
+	}
+	var realms: Array = (snap.get("realm_states", []) as Array)
+	for r in realms:
+		var rd := r as Dictionary
+		var realm_id := String(rd.get("realm_id", ""))
+		var stage_index := int(rd.get("stage_index", 0))
+		# realm row
+		var realm_seed := get_realm_seed(realm_id)
+		info["realms"].append({
+			"realm_id": realm_id,
+			"realm_seed": realm_seed,
+			"stage_index": stage_index
+		})
+		# stage row
+		var stage_seed := get_stage_seed(realm_id, stage_index)
+		info["stages"].append({
+			"realm_id": realm_id,
+			"stage_index": stage_index,
+			"stage_seed": stage_seed
+		})
+	return info

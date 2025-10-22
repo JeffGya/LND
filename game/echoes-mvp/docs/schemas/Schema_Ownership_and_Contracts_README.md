@@ -4,9 +4,10 @@
 
 ## Root Save (container)
 
-- **Keys:** `schema_version`, `build_id`, `created_utc`, `last_saved_utc`, `content_hash`, `integrity`, plus all modules.
-- **Writes:** `SaveService` (timestamps, content hash), never by feature systems.
+- **Keys:** `schema_version`, `build_id`, `created_utc`, `last_saved_utc`, `content_hash`, `integrity`, `replay_header`, plus all modules.
+- **Writes:** `SaveService` (timestamps, content hash, replay_header), never by feature systems.
 - **Notes:** Versioning/migrations per §13.3/13.9; local saves, optional cloud later.
+- **Hash policy:** `content_hash` is computed over a *canonical* hash view (sorted keys, normalized numbers) and **excludes** `telemetry_log` and `replay_header` to avoid false mismatches.
 
 ---
 
@@ -29,7 +30,7 @@
 | `research_crafting.research_tree`, `active_projects[]`, `known_recipes[]` | UI, Economy                                         | **ResearchCraftingSystem**                         | Queue caps; emotion gates per §11.12. |
 | `legacy.fragments[]`, `legacy.lineages[]`, `legacy.memorials[]` | UI, HeroSystem                                      | **LegacySystem**                                   | Filled on permadeath/retirement (§10 lineage). |
 | `telemetry_log.{ring,cursor,enabled}`            | QA tools, Balance analysis                          | **TelemetrySystem**                                | O(1) ring buffer; compact events per §15. |
-| `content_hash`, `integrity.signed`               | Loader, Anti-tamper                                 | **SaveService**                                    | Hash over canonical order; optional signing later. |
+| `content_hash`, `integrity.signed`, `replay_header`               | Loader, Anti-tamper                                | **SaveService**                                    | Canonical hash; excludes telemetry/replay_header. Replay header is regenerated on save. |
 
 > **Rule:** Every field has exactly **one** writer. All other systems **read-only**. This avoids “last write wins” bugs and protects determinism.
 
@@ -45,6 +46,7 @@
 - **economy**: `ase`, `ekwan`, `relics[]`, `yields{daily_ase}`, `sinks{...}`. Faith↔Ase influence per §12.3.1  
 - **research_crafting**: `research_tree`, `active_projects[]`, `known_recipes[]`  
 - **legacy**: `fragments[]`, `lineages[]`, `memorials[]`  
+- **replay_header** (written on save): `at_cursor{}`, `build_id`, `campaign_seed`, `realm_order[]`, `schema_version`
 - **telemetry_log**: `ring[]`, `cursor`, `enabled`  
 
 ---
@@ -77,6 +79,7 @@
   "economy": { "ase": 0, "ekwan": 0, "relics": [], "yields": { "daily_ase": 0 }, "sinks": {} },
   "research_crafting": { "research_tree": { "faith": [], "war": [], "knowledge": [] }, "active_projects": [], "known_recipes": [] },
   "legacy": { "fragments": [], "lineages": [], "memorials": [] },
+  "replay_header": { "campaign_seed": "2730052880", "realm_order": [], "build_id": "0.1.0-mvp", "schema_version": "13.0.0", "at_cursor": { "combat/battle/alpha": 10 } },
   "telemetry_log": { "ring": [], "cursor": 0, "enabled": true },
   "content_hash": "",
   "integrity": { "signed": false }
@@ -103,14 +106,12 @@
 
 ### Loader flow (SaveService)
 1. Parse JSON → validate required modules & ranges.
-2. `migrate(save)` → may enrich optional fields, or **block** (future/different MAJOR).
-3. If blocked or invalid after migration → try `.bak`. If that also fails → load aborts.
+2. Verify `content_hash` against the canonical hash view (sorted keys, normalized numbers, excludes telemetry/replay_header). If mismatch → try `.bak`.
+3. `migrate(save)` → may enrich optional fields, or **block** (future/different MAJOR). If blocked or invalid after migration → try `.bak`.
 4. On success → `_apply_unpack()` restores runtime state.
 
-### Bumping the version
-- Bump `SCHEMA_VERSION` in `core/save/SaveService.gd` (and optionally `BUILD_ID`).
-- Update example JSON in this document to match.
-- For MINOR bumps, consider adding a one‑line note of what defaults are injected.
+### Canonical hashing
+Keys in dictionaries are sorted lexicographically and floats that represent whole numbers are normalized to integers before hashing. The hash view excludes `telemetry_log` and `replay_header` to keep integrity checks stable across parse/stringify and logging.
 
 ---
 
@@ -165,4 +166,14 @@ Written once per save by `SaveService` for debugging and replay indexing.
 ### Determinism Notes
 
 Telemetry and replay_header are *observational only* and are excluded from
-round-trip equality tests. They record, never influence, simulation outcomes.
+round-trip equality tests. They record, never influence, simulation outcomes.  
+Additionally, both blocks are excluded from the `content_hash` integrity computation.
+
+---
+
+## Debug Save Panel (Task 10)
+A minimal in-engine panel for QA to click **New / Save / Load / Validate / Snapshot** without running the script harness.
+
+- **Files:** `core/ui/DebugSavePanel.tscn`, `core/ui/DebugSavePanel.gd`
+- **What it shows:** RNG cursor for `combat/battle/alpha`, on-disk file summary, latest telemetry tail, and the `replay_header`.
+- **Notes:** Uses the same `SaveService` pipeline (atomic write, backup, canonical hash) and respects the telemetry `enabled` flag.

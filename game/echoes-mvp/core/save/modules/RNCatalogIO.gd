@@ -107,7 +107,7 @@ static func ensure_stream(key: String, parent_key: String = "") -> void:
 	var gen: Variant = _pcg_new(child_seed_i64)
 	# fast-forward
 	if cur > 0:
-		for i in cur:
+		for i in range(cur):
 			_pcg_next_u32(gen, child_seed_i64, i)
 	_streams[key] = {"seed": child_seed_i64, "cursor": cur, "pcg": gen}
 
@@ -158,7 +158,7 @@ static func _derive_seed(parent_seed_str: String, key: String) -> int:
 			var u64b := int(_xxh_script.call("hash64", bytes))
 			return int(u64b & 0x7fffffffffffffff)
 	# Fallback: FNV-1a 64-bit (deterministic)
-	var fnv: int = 0xcbf29ce484222325
+	var fnv: int = -3750763034362895579 # 0xCBF29CE484222325 as signed int64
 	var prime: int = 0x100000001b3
 	for b in bytes:
 		fnv = int((fnv ^ int(b)) & 0xffffffffffffffff)
@@ -210,11 +210,12 @@ static func _validate(d: Dictionary) -> Dictionary:
 	if typeof(d.subseeds) != TYPE_DICTIONARY:
 		return {"ok": false, "message": "subseeds must be object"}
 	for kk in (d.subseeds as Dictionary).keys():
-		if typeof((d.subseeds as Dictionary)[kk]) != TYPE_STRING:
-			return {"ok": false, "message": "subseeds.%s must be string" % String(kk)}
+		if typeof(kk) != TYPE_STRING or typeof((d.subseeds as Dictionary)[kk]) != TYPE_STRING:
+			return {"ok": false, "message": "subseeds must map String->String"}
 	if typeof(d.cursors) != TYPE_DICTIONARY:
 		return {"ok": false, "message": "cursors must be object"}
 	for kk in (d.cursors as Dictionary).keys():
-		if typeof((d.cursors as Dictionary)[kk]) != TYPE_INT:
-			return {"ok": false, "message": "cursors.%s must be int" % String(kk)}
+		var cv = (d.cursors as Dictionary)[kk]
+		if typeof(kk) != TYPE_STRING or typeof(cv) != TYPE_INT or int(cv) < 0:
+			return {"ok": false, "message": "cursors must map String->Int>=0"}
 	return {"ok": true, "message": "OK"}
