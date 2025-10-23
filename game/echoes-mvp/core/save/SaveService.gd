@@ -163,6 +163,63 @@ func snapshot() -> Dictionary:
 	return _assemble_root()
 
 # -------------------------------------------------------------
+# Economy & Emotions helpers (MVP)
+# -------------------------------------------------------------
+## Return current Ase from the economy block; bootstrap defaults if missing.
+func economy_get_ase() -> float:
+	var eco: Dictionary = EconomyIO.pack_current()
+	if not eco.has("ase"):
+		eco["ase"] = 0.0
+		if not eco.has("yields"):
+			eco["yields"] = {"daily_ase": 0.0}
+		EconomyIO.unpack(eco)
+	return float(eco.get("ase", 0.0))
+
+## Add Ase and write back into the economy block; returns new total.
+## Light autosave: every AUTOSAVE_TICKS or AUTOSAVE_SECONDS (whichever first).
+const AUTOSAVE_TICKS := 5
+const AUTOSAVE_SECONDS := 120.0
+var _autosave_tick_counter: int = 0
+var _last_autosave_unix: int = 0
+
+func economy_add_ase(delta: float) -> float:
+	var eco: Dictionary = EconomyIO.pack_current()
+	if not eco.has("ase"):
+		eco["ase"] = 0.0
+	var cur := float(eco.get("ase", 0.0))
+	cur += float(delta)
+	eco["ase"] = cur
+	EconomyIO.unpack(eco)
+	_autosave_tick_counter += 1
+	var now_unix := Time.get_unix_time_from_system()
+	if _last_autosave_unix == 0:
+		_last_autosave_unix = now_unix
+	if _autosave_tick_counter >= AUTOSAVE_TICKS or (now_unix - _last_autosave_unix) >= int(AUTOSAVE_SECONDS):
+		save_game()
+		_autosave_tick_counter = 0
+		_last_autosave_unix = now_unix
+	return cur
+
+## Temporary: read Faith from sanctum_state until emotions module is formalized.
+func emotions_get_faith() -> int:
+	var sanctum: Dictionary = SanctumIO.pack_current()
+	var emotions: Dictionary = (sanctum.get("emotions", {}) as Dictionary)
+	var faith_val: int = int(emotions.get("faith", 60))
+	# Clamp to 0..100 per canon
+	return clampi(faith_val, 0, 100)
+
+## Temporary: set Faith (0..100) in sanctum_state and persist to runtime (no autosave).
+func emotions_set_faith(value: int) -> int:
+	var sanctum: Dictionary = SanctumIO.pack_current()
+	var emotions: Dictionary = (sanctum.get("emotions", {}) as Dictionary)
+	var clamped: int = clampi(value, 0, 100)
+	emotions["faith"] = clamped
+	# Keep other emotion slots stable if present; otherwise leave as-is.
+	sanctum["emotions"] = emotions
+	SanctumIO.unpack(sanctum)
+	return clamped
+
+# -------------------------------------------------------------
 # Validation & Migration (MVP — light checks)
 # -------------------------------------------------------------
 ## Validate a ROOT dictionary roughly against the v0.1 schema.
@@ -348,6 +405,11 @@ func _assemble_root() -> Dictionary:
 	var hr: Dictionary = HeroesIO.pack_current()
 	var rs: Array = RealmsIO.pack_current()
 	var em: Dictionary = EconomyIO.pack_current()
+	# Ensure MVP economy defaults exist
+	if not em.has("ase"):
+		em["ase"] = 0.0
+	if not em.has("yields"):
+		em["yields"] = {"daily_ase": 0.0}
 	var rc: Dictionary = ResearchCraftingIO.pack_current()
 	var lg: Dictionary = LegacyIO.pack_current()
 	var tl: Dictionary = TelemetryIO.pack_current()
@@ -390,12 +452,30 @@ func _apply_unpack(root: Dictionary) -> void:
 	CampaignRunIO.unpack(root["campaign_run"] as Dictionary)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: sanctum_state")
 	SanctumIO.unpack(root["sanctum_state"] as Dictionary)
+	# Post-unpack guard: keep MVP emotions defaults present (Faith/Harmony/Favor)
+	var sc_runtime: Dictionary = SanctumIO.pack_current()
+	var emo: Dictionary = (sc_runtime.get("emotions", {}) as Dictionary)
+	if not emo.has("faith"):
+		emo["faith"] = 60
+	if not emo.has("harmony"):
+		emo["harmony"] = 50
+	if not emo.has("favor"):
+		emo["favor"] = 0
+	sc_runtime["emotions"] = emo
+	SanctumIO.unpack(sc_runtime)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: hero_roster")
 	HeroesIO.unpack(root["hero_roster"] as Dictionary)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: realm_states")
 	RealmsIO.unpack(root["realm_states"] as Array)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: economy")
 	EconomyIO.unpack(root["economy"] as Dictionary)
+	# Post-unpack guard: keep MVP economy defaults present
+	var em_runtime: Dictionary = EconomyIO.pack_current()
+	if not em_runtime.has("ase"):
+		em_runtime["ase"] = 0.0
+	if not em_runtime.has("yields"):
+		em_runtime["yields"] = {"daily_ase": 0.0}
+	EconomyIO.unpack(em_runtime)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: research_crafting")
 	ResearchCraftingIO.unpack(root["research_crafting"] as Dictionary)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: legacy")
