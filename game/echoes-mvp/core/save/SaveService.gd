@@ -29,7 +29,13 @@ const DEBUG_SAVE := false
 var _created_utc: String = ""
 var _last_saved_utc: String = ""
 var _content_hash: String = ""   # SHA-256 of JSON with content_hash cleared
+
 var _integrity_signed: bool = false
+
+# -------------------------------------------------------------
+# Signals
+# -------------------------------------------------------------
+signal faith_changed(new_value: int)
 
 # -------------------------------------------------------------
 # Lifecycle hooks
@@ -67,6 +73,9 @@ func new_game(campaign_seed: int) -> void:
 	_created_utc = root["created_utc"]
 	_last_saved_utc = root["last_saved_utc"]
 	_apply_unpack(root)  # populate runtime from this root
+	var f_new := emotions_get_faith()
+	_push_faith_to_runtime(f_new)
+	emit_signal("faith_changed", f_new)
 
 ## Write the current game state to disk. Returns true on success.
 func save_game(path: String = SAVE_PATH) -> bool:
@@ -154,6 +163,9 @@ func load_game(path: String = SAVE_PATH) -> bool:
 	_last_saved_utc = save_dict.get("last_saved_utc", "")
 	_content_hash = save_dict.get("content_hash", "")
 	_integrity_signed = (save_dict.get("integrity", {}) as Dictionary).get("signed", false)
+	var f_loaded := emotions_get_faith()
+	_push_faith_to_runtime(f_loaded)
+	emit_signal("faith_changed", f_loaded)
 	if DEBUG_SAVE:
 		push_warning("[SaveService] load_game: success")
 	return true
@@ -200,24 +212,38 @@ func economy_add_ase(delta: float) -> float:
 		_last_autosave_unix = now_unix
 	return cur
 
-## Temporary: read Faith from sanctum_state until emotions module is formalized.
+## Persistent: read Faith from sanctum_state (0..100, default 60, clamped).
 func emotions_get_faith() -> int:
 	var sanctum: Dictionary = SanctumIO.pack_current()
 	var emotions: Dictionary = (sanctum.get("emotions", {}) as Dictionary)
 	var faith_val: int = int(emotions.get("faith", 60))
-	# Clamp to 0..100 per canon
 	return clampi(faith_val, 0, 100)
 
-## Temporary: set Faith (0..100) in sanctum_state and persist to runtime (no autosave).
+## Persistent: set Faith (0..100) in sanctum_state, update runtime, emit signal.
 func emotions_set_faith(value: int) -> int:
 	var sanctum: Dictionary = SanctumIO.pack_current()
 	var emotions: Dictionary = (sanctum.get("emotions", {}) as Dictionary)
+	var prev: int = int(emotions.get("faith", 60))
 	var clamped: int = clampi(value, 0, 100)
+	if clamped == prev:
+		return clamped
 	emotions["faith"] = clamped
-	# Keep other emotion slots stable if present; otherwise leave as-is.
 	sanctum["emotions"] = emotions
 	SanctumIO.unpack(sanctum)
+	_push_faith_to_runtime(clamped)
+	emit_signal("faith_changed", clamped)
 	return clamped
+# -------------------------------------------------------------
+# Validation & Migration (MVP — light checks)
+# -------------------------------------------------------------
+## Bridge: push Faith into runtime services (Ase tick) without creating hard deps
+func _push_faith_to_runtime(v: int) -> void:
+	var root := get_tree().get_root()
+	if root == null:
+		return
+	var ase_tick := root.get_node_or_null("/root/AseTickService")
+	if ase_tick != null and ase_tick.has_method("set_faith"):
+		ase_tick.set_faith(v)
 
 # -------------------------------------------------------------
 # Validation & Migration (MVP — light checks)

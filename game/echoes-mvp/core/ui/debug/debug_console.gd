@@ -23,6 +23,8 @@ var _econ_live_service: Node = null
 # Shared preloads
 const Seedbook = preload("res://core/seed/Seedbook.gd")
 const AseTickService = preload("res://core/economy/AseTickService.gd")
+const EconomyConstants = preload("res://core/economy/EconomyConstants.gd")
+const TestRunner = preload("res://core/tests/TestRunner.gd")
 
 # Optional: attach a label later without hard dependency
 @export var output_label_path: NodePath
@@ -316,7 +318,7 @@ func _register_default_commands() -> void:
 
 		# Assert — expected within 1%
 		var faith_eff: int = clampi(faith, 0, 100)  # mirror service set_faith()
-		var mult: float = clampf(1.0 + 0.015 * (float(faith_eff) - 50.0), 0.5, 2.0)
+		var mult: float = EconomyConstants.faith_to_multiplier(faith_eff)
 		var expected: float = (2.0 * mult) * (tick_seconds / 60.0) * float(ticks)
 		var diff: float = abs(sum_ref[0] - expected)
 		var tol: float = max(0.01 * expected, 0.0001)
@@ -336,6 +338,13 @@ func _register_default_commands() -> void:
 				var v: Variant = svc.get("faith")  # works because AseTickService exports `faith`
 				if typeof(v) != TYPE_NIL:
 					_print_line("AseTickService faith (runtime) = %d" % int(v))
+			# Print the active multiplier
+			if svc and svc.has_method("get_faith_multiplier"):
+				var m := float(svc.get_faith_multiplier())
+				_print_line("Multiplier (runtime) = %.3f" % m)
+			else:
+				var m2 := EconomyConstants.faith_to_multiplier(int(val))
+				_print_line("Multiplier (by curve) = %.3f" % m2)
 			return 0
 		else:
 			_print_line("SaveService not available; cannot read faith")
@@ -369,6 +378,52 @@ func _register_default_commands() -> void:
 		else:
 			_print_line("SaveService not available; cannot persist faith")
 			return 1
+
+	# --- Ase multiplier debug -----------------------------------------------
+	_commands["/ase_multiplier"] = func(_args: Array) -> int:
+		var svc := _find_ase_service()
+		if svc == null:
+			_print_line("[ase_multiplier] AseTickService not found in the running scene")
+			return 1
+		var base: float = 2.0
+		var tick_s: float = 60.0
+		var faith_i: int = 60
+		var v: Variant
+		v = svc.get("base_ase_per_min"); if typeof(v) != TYPE_NIL: base = float(v)
+		v = svc.get("tick_seconds");     if typeof(v) != TYPE_NIL: tick_s = float(v)
+		v = svc.get("faith");            if typeof(v) != TYPE_NIL: faith_i = int(v)
+		var mult: float = EconomyConstants.faith_to_multiplier(clampi(faith_i, 0, 100))
+		var per_tick: float = (base * mult) * (tick_s / 60.0)
+		_print_line("Faith=%d  Mult=%.3f  Base/min=%.3f  Tick_s=%.3f  Ase/tick=%.5f" % [faith_i, mult, base, tick_s, per_tick])
+		return 0
+
+	# --- Test runner -----------------------------------------------------------
+	_commands["/run_tests"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /run_tests <economy|all>")
+			return 1
+		var suite := String(args[0]).to_lower()
+		match suite:
+			"economy":
+				var summary: Dictionary = TestRunner.run_economy(true)
+				var totals: Dictionary = summary.get("totals", {})
+				var passed := int(totals.get("passed", 0))
+				var total := int(totals.get("total", 0))
+				var failed := int(totals.get("failed", total - passed))
+				_print_line("[run_tests] economy: %d/%d PASS%s" % [passed, total, ("" if failed == 0 else " (" + str(failed) + " FAIL)")])
+				return 0 if failed == 0 else 2
+			"all":
+				var res: Dictionary = TestRunner.run_all(true)
+				var econ: Dictionary = res.get("economy", {})
+				var totals2: Dictionary = econ.get("totals", {})
+				var passed2 := int(totals2.get("passed", 0))
+				var total2 := int(totals2.get("total", 0))
+				var failed2 := int(totals2.get("failed", total2 - passed2))
+				_print_line("[run_tests] economy: %d/%d PASS%s" % [passed2, total2, ("" if failed2 == 0 else " (" + str(failed2) + " FAIL)")])
+				return 0 if failed2 == 0 else 2
+			_:
+				_print_line("Usage: /run_tests <economy|all>")
+				return 1
 
 
 # --- Private helpers ---
@@ -413,7 +468,7 @@ func _finish_live_summary() -> void:
 	if typeof(v) != TYPE_NIL:
 		faith_i = int(v)
 	var faith_eff: int = clampi(faith_i, 0, 100)
-	var mult: float = clampf(1.0 + 0.015 * (float(faith_eff) - 50.0), 0.5, 2.0)
+	var mult: float = EconomyConstants.faith_to_multiplier(faith_eff)
 	var per_tick: float = (base * mult) * (tick_s / 60.0)
 	var expected: float = per_tick * float(_econ_live_count)
 	var diff: float = abs(_econ_live_sum - expected)

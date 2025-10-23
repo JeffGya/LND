@@ -13,8 +13,11 @@ extends Node
 ##  - Connect `ase_generated(amount, total_after, tick_index)` to something
 ##    that updates the save and/or UI.
 
+## Uses EconomyConstants.faith_to_multiplier() per canon §12.
+
 signal ase_generated(amount: float, total_after: float, tick_index: int)
 signal state_changed(state: String)
+signal ase_generated_ex(amount: float, total_after: float, tick_index: int, meta: Dictionary)
 
 @export var base_ase_per_min: float = 2.0   # Base Ase per minute at Faith=50
 @export var tick_seconds: float = 60.0       # Seconds per tick
@@ -25,6 +28,9 @@ signal state_changed(state: String)
 @export var clamp_multiplier: bool = true
 @export var min_multiplier: float = 0.5
 @export var max_multiplier: float = 2.0
+
+## Cached, canon-clamped multiplier updated whenever Faith changes
+var _cached_multiplier: float = 1.0
 
 var _timer: Timer
 var _running: bool = false
@@ -39,6 +45,7 @@ func _ready() -> void:
 	_timer.one_shot = false
 	add_child(_timer)
 	_timer.timeout.connect(_on_tick)
+	_cached_multiplier = _compute_faith_multiplier()
 	if autostart:
 		start()
 
@@ -64,11 +71,28 @@ func reset_local_total(to_value: float) -> void:
 
 func set_faith(value: int) -> void:
 	faith = clampi(value, 0, 100)
+	_cached_multiplier = _compute_faith_multiplier()
+	emit_signal("state_changed", "faith_updated:%d" % faith)
 
 func set_tick_seconds(seconds: float) -> void:
 	tick_seconds = max(0.1, seconds)
 	if _timer:
 		_timer.wait_time = tick_seconds
+
+func set_base_ase_per_min(v: float) -> void:
+	base_ase_per_min = max(0.0, v)
+
+func get_base_ase_per_min() -> float:
+	return base_ase_per_min
+
+func get_tick_seconds() -> float:
+	return tick_seconds
+
+func get_faith() -> int:
+	return faith
+
+func get_faith_multiplier() -> float:
+	return _cached_multiplier
 
 func get_last_tick_amount() -> float:
 	return _last_amount
@@ -84,15 +108,22 @@ func _on_tick() -> void:
 	_tick_index += 1
 	_running_total += amount
 	emit_signal("ase_generated", amount, _running_total, _tick_index)
+	emit_signal("ase_generated_ex", amount, _running_total, _tick_index, {
+		"faith": faith,
+		"mult": _cached_multiplier,
+		"base_ase_per_min": base_ase_per_min,
+		"tick_seconds": tick_seconds
+	})
 
 func _compute_tick_amount() -> float:
-	var mult := _compute_faith_multiplier()
-	var per_min := base_ase_per_min * mult
+	var per_min := base_ase_per_min * _cached_multiplier
 	var per_tick := per_min * (tick_seconds / 60.0)
 	return per_tick
 
 func _compute_faith_multiplier() -> float:
-	var mult := 1.0 + 0.015 * (float(faith) - 50.0)
+	# Canon single source of truth (EconomyConstants). This already clamps to [0.5, 2.0].
+	var mult := EconomyConstants.faith_to_multiplier(faith)
+	# Optional secondary clamp using exported fields for compatibility with existing inspector knobs.
 	if clamp_multiplier:
 		mult = clampf(mult, min_multiplier, max_multiplier)
 	return mult
