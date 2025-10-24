@@ -21,10 +21,10 @@ var _econ_live_count: int = 0
 var _econ_live_service: Node = null
 
 # Shared preloads
-const Seedbook = preload("res://core/seed/Seedbook.gd")
+const Seedbook = preload("res://core/seed/SeedBook.gd")
 const AseTickService = preload("res://core/economy/AseTickService.gd")
-const EconomyConstants = preload("res://core/economy/EconomyConstants.gd")
-const TestRunner = preload("res://core/tests/TestRunner.gd")
+const EconomyServiceScript = preload("res://core/services/EconomyService.gd")
+@onready var _econ_service_inst: Node = EconomyServiceScript.new()
 
 # Optional: attach a label later without hard dependency
 @export var output_label_path: NodePath
@@ -34,6 +34,11 @@ const TestRunner = preload("res://core/tests/TestRunner.gd")
 
 func _ready() -> void:
 	_register_default_commands()
+	# Live economy updates in console (optional but helpful)
+	if has_node("/root/SaveService"):
+		var ss: Node = get_node("/root/SaveService")
+		if not ss.is_connected("economy_changed", Callable(self, "_on_economy_changed")):
+			ss.connect("economy_changed", Callable(self, "_on_economy_changed"))
 	# Resolve label again if path was set in-scene and ensure input UI exists
 	if output_label_path != NodePath("") and _output_label == null:
 		_output_label = get_node_or_null(output_label_path)
@@ -235,7 +240,201 @@ func _register_default_commands() -> void:
 				_print_line("%s => missing" % abs_path)
 		return 0
 
+	# --- Economy quick commands ---
+	_commands["/get_balances"] = func(_args: Array) -> int:
+		var ase_banked: int = int(EconomyServiceScript.get_ase_banked())
+		var ase_effective: float = float(EconomyServiceScript.get_ase_effective())
+		var ek_i: int = int(EconomyServiceScript.get_ekwan_banked())
+		_print_line("Balances — Ase(banked): %d, Ase(effective): %.2f, Ekwan: %d" % [ase_banked, ase_effective, ek_i])
+		return 0
 
+	_commands["/get_ase_buffer"] = func(_args: Array) -> int:
+		var buf: float = float(EconomyServiceScript.get_ase_buffer())
+		var banked: int = int(EconomyServiceScript.get_ase_banked())
+		var eff: float = float(EconomyServiceScript.get_ase_effective())
+		_print_line("Ase buffer: %.4f (banked=%d, effective=%.4f)" % [buf, banked, eff])
+		return 0
+
+	_commands["/trade_ase"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /trade_ase <amount:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/trade_ase expects a positive integer amount")
+			return 1
+		var amount: int = int(s)
+		if amount <= 0:
+			_print_line("Amount must be a positive integer")
+			return 1
+		var res: Dictionary = _econ_service_inst.trade_ase_to_ekwan_inst(amount)
+		if bool(res.get("ok", false)):
+			_print_line("Trade OK — Spent Ase: %d, Gained Ekwan: %d, Leftover Ase Requested: %d, Rate: %d" % [
+				int(res.get("ase_spent", 0)), int(res.get("ekwan_gained", 0)), int(res.get("leftover_ase_requested", 0)), int(res.get("rate", 0))
+			])
+			return 0
+		else:
+			var reason := String(res.get("reason", ""))
+			var rate := int(res.get("rate", 0))
+			match reason:
+				"insufficient_batch":
+					_print_line("Trade failed — insufficient batch. Need at least %d Ase per 1 Ekwan." % rate)
+					return 2
+				"insufficient_funds":
+					_print_line("Trade failed — not enough Ase for a full batch at rate %d." % rate)
+					return 3
+				_:
+					_print_line("Trade failed — unknown reason.")
+					return 4
+
+	_commands["/trade_ekwan"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /trade_ekwan <amount:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/trade_ekwan expects a positive integer amount")
+			return 1
+		var amount: int = int(s)
+		if amount <= 0:
+			_print_line("Amount must be a positive integer")
+			return 1
+		var res: Dictionary = _econ_service_inst.trade_ekwan_to_ase_inst(amount)
+		if bool(res.get("ok", false)):
+			_print_line("Trade OK — Spent Ekwan: %d, Gained Ase: %d, Rate: %d" % [
+				int(res.get("ekwan_spent", 0)), int(res.get("ase_gained", 0)), int(res.get("rate", 0))
+			])
+			return 0
+		else:
+			var reason := String(res.get("reason", ""))
+			var rate := int(res.get("rate", 0))
+			if reason == "insufficient_funds":
+				_print_line("Trade failed — not enough Ekwan.")
+				return 3
+			_print_line("Trade failed — unknown reason.")
+			return 4
+
+	# --- Economy dev/cheat commands -----------------------------------------
+	# Instantly add banked Ase (whole units)
+	_commands["/give_ase"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /give_ase <amount:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/give_ase expects a positive integer amount")
+			return 1
+		var amt: int = int(s)
+		if amt <= 0:
+			_print_line("Amount must be a positive integer")
+			return 1
+		var after_banked: int = EconomyServiceScript.deposit_ase(amt)
+		var eff: float = float(EconomyServiceScript.get_ase_effective())
+		_print_line("[give_ase] +%d → banked=%d, effective=%.2f" % [amt, after_banked, eff])
+		return 0
+
+	# Instantly add banked Ekwan (whole units)
+	_commands["/give_ekwan"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /give_ekwan <amount:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/give_ekwan expects a positive integer amount")
+			return 1
+		var amt: int = int(s)
+		if amt <= 0:
+			_print_line("Amount must be a positive integer")
+			return 1
+		var after_ek: int = EconomyServiceScript.deposit_ekwan(amt)
+		_print_line("[give_ekwan] +%d → ekwan=%d" % [amt, after_ek])
+		return 0
+
+	# Set banked Ase to an exact target value
+	_commands["/set_ase"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /set_ase <target:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/set_ase expects an integer")
+			return 1
+		var target: int = int(s)
+		if target < 0:
+			_print_line("Target cannot be negative")
+			return 1
+		var have: int = int(EconomyServiceScript.get_ase_banked())
+		var delta: int = target - have
+		if delta > 0:
+			var after_banked: int = EconomyServiceScript.deposit_ase(delta)
+			var eff: float = float(EconomyServiceScript.get_ase_effective())
+			_print_line("[set_ase] banked: %d → %d (Δ+%d), effective=%.2f" % [have, after_banked, delta, eff])
+			return 0
+		elif delta < 0:
+			var res: Dictionary = EconomyServiceScript.try_spend_ase(-delta)
+			if bool(res.get("ok", false)):
+				var rem: int = int(res.get("remaining", 0))
+				var eff2: float = float(EconomyServiceScript.get_ase_effective())
+				_print_line("[set_ase] banked: %d → %d (Δ%d), effective=%.2f" % [have, rem, delta, eff2])
+				return 0
+			else:
+				_print_line("[set_ase] failed: insufficient funds (have=%d need=%d)" % [int(res.get("have",0)), int(res.get("need",0))])
+				return 2
+		else:
+			_print_line("[set_ase] banked already %d" % have)
+			return 0
+
+	# Set banked Ekwan to an exact target value
+	_commands["/set_ekwan"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /set_ekwan <target:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/set_ekwan expects an integer")
+			return 1
+		var target: int = int(s)
+		if target < 0:
+			_print_line("Target cannot be negative")
+			return 1
+		var have: int = int(EconomyServiceScript.get_ekwan_banked())
+		var delta: int = target - have
+		if delta > 0:
+			var after_ek: int = EconomyServiceScript.deposit_ekwan(delta)
+			_print_line("[set_ekwan] ekwan: %d → %d (Δ+%d)" % [have, after_ek, delta])
+			return 0
+		elif delta < 0:
+			var res2: Dictionary = EconomyServiceScript.try_spend_ekwan(-delta)
+			if bool(res2.get("ok", false)):
+				var rem2: int = int(res2.get("remaining", 0))
+				_print_line("[set_ekwan] ekwan: %d → %d (Δ%d)" % [have, rem2, delta])
+				return 0
+			else:
+				_print_line("[set_ekwan] failed: insufficient funds (have=%d need=%d)" % [int(res2.get("have",0)), int(res2.get("need",0))])
+				return 2
+		else:
+			_print_line("[set_ekwan] ekwan already %d" % have)
+			return 0
+
+	# Add to the fractional Ase buffer (commits whole units automatically)
+	_commands["/give_ase_float"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /give_ase_float <amount:float>")
+			return 1
+		var s := String(args[0])
+		if not (s.is_valid_float() or s.is_valid_int()):
+			_print_line("/give_ase_float expects a numeric amount")
+			return 1
+		var amt_f: float = float(s)
+		if amt_f == 0.0:
+			_print_line("Amount must be non-zero")
+			return 1
+		var eff_after: float = _econ_service_inst.add_ase_float(amt_f)
+		var banked2: int = int(EconomyServiceScript.get_ase_banked())
+		var buf: float = float(EconomyServiceScript.get_ase_buffer())
+		_print_line("[give_ase_float] %+0.3f → buffer=%.3f, effective=%.3f, banked=%d" % [amt_f, buf, eff_after, banked2])
+		return 0
+		
 	# --- Economy tests -------------------------------------------------
 	_commands["/test_economy"] = func(args: Array) -> int:
 		# Usage:
@@ -425,6 +624,79 @@ func _register_default_commands() -> void:
 				_print_line("Usage: /run_tests <economy|all>")
 				return 1
 
+	# --- Telemetry controls ---------------------------------------------------
+	_commands["/telemetry"] = func(args: Array) -> int:
+		if args.size() == 0:
+			_print_line("Usage: /telemetry <level|max|tail|clear> [value]")
+			_print_line("Levels: 0=OFF, 1=INFO, 2=DEBUG, 3=LIVE")
+			return 1
+		var sub := String(args[0]).to_lower()
+		match sub:
+			"level":
+				if args.size() == 1:
+					var current_level := int(get_node("/root/SaveService").telemetry_get_level())
+					_print_line("[telemetry] current level=%d (0=OFF,1=INFO,2=DEBUG,3=LIVE)" % current_level)
+					return 0
+				var s := String(args[1])
+				if not s.is_valid_int():
+					_print_line("/telemetry level <0..3>")
+					return 1
+				var new_level := clampi(int(s), 0, 3)
+				get_node("/root/SaveService").telemetry_set_level(new_level)
+				_print_line("[telemetry] level set to %d" % new_level)
+				return 0
+			"max":
+				if args.size() == 1:
+					var current_capacity := int(get_node("/root/SaveService").telemetry_tail(0).size())
+					_print_line("[telemetry] current max capacity=%d" % current_capacity)
+					return 0
+				var s2 := String(args[1])
+				if not s2.is_valid_int():
+					_print_line("/telemetry max <1..1000>")
+					return 1
+				var new_max := int(s2)
+				get_node("/root/SaveService").telemetry_set_max(new_max)
+				_print_line("[telemetry] max capacity set to %d" % new_max)
+				return 0
+			"tail":
+				var count := 10
+				if args.size() > 1 and String(args[1]).is_valid_int():
+					count = int(args[1])
+				var arr: Array = get_node("/root/SaveService").telemetry_tail(count)
+				_print_line("[telemetry] last %d events (%d total):" % [count, arr.size()])
+				for ev in arr:
+					var evt := ev as Dictionary
+					var payload: Variant = (evt.get("payload") if evt.has("payload") else null)
+					var ts_text := "?"
+					if evt.has("ts"):
+						ts_text = str(evt.get("ts"))
+					elif payload is Dictionary and (payload as Dictionary).has("ts"):
+						ts_text = str((payload as Dictionary).get("ts"))
+					var type_text := "?"
+					if evt.has("type"):
+						type_text = str(evt.get("type"))
+					elif payload is Dictionary and (payload as Dictionary).has("evt"):
+						type_text = str((payload as Dictionary).get("evt"))
+					var cat_text := "-"
+					if payload is Dictionary and (payload as Dictionary).has("cat"):
+						cat_text = str((payload as Dictionary).get("cat"))
+					elif evt.has("cat"):
+						cat_text = str(evt.get("cat"))
+					var data_obj: Variant = {}
+					if payload is Dictionary and (payload as Dictionary).has("data"):
+						data_obj = (payload as Dictionary).get("data")
+					elif evt.has("data"):
+						data_obj = evt.get("data")
+					_print_line(" - %s [%s/%s] %s" % [ts_text, type_text, cat_text, str(data_obj)])
+				return 0
+			"clear":
+				get_node("/root/SaveService").telemetry_clear()
+				_print_line("[telemetry] cleared")
+				return 0
+			_:
+				_print_line("Usage: /telemetry <level|max|tail|clear> [value]")
+				return 1
+
 
 # --- Private helpers ---
 
@@ -544,3 +816,6 @@ func _on_console_submit(text: String) -> void:
 	_input_field.text = ""
 	_input_field.visible = false
 	_input_field.release_focus()
+# Handler for live economy updates (signal: economy_changed)
+func _on_economy_changed(kind: String, delta: int, new_value: int) -> void:
+	_print_line("[economy] %s %+d → %d" % [kind, delta, new_value])

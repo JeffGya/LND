@@ -1,4 +1,3 @@
-
 extends Resource
 class_name TelemetryIO
 
@@ -8,6 +7,9 @@ class_name TelemetryIO
 ##   "ring":   object[],   # free-form event objects (bounded ring buffer)
 ##   "cursor": int >= 0,   # next write index (monotonic)
 ##   "enabled": bool       # gate for writes
+##   "level": int    # 0=OFF, 1=INFO, 2=DEBUG, 3=LIVE (verbosity gate)
+##   "max_events": int  # ring capacity (<= CAPACITY)
+## Importance gating: events are recorded only if (enabled == true) AND (importance <= level).
 ## }
 ##
 ## Task 8 adds:
@@ -26,6 +28,8 @@ const CAPACITY: int = 256  # bounded size of the telemetry ring
 static var _enabled: bool = true
 static var _cursor: int = 0
 static var _ring: Array = []  # Array[Dictionary], untyped to avoid generic warnings
+static var _level: int = 1        # 0=OFF, 1=INFO, 2=DEBUG, 3=LIVE
+static var _max_events: int = CAPACITY
 
 # -------------------------------------------------------------
 # Public API used by SaveService
@@ -36,7 +40,9 @@ static func pack_default() -> Dictionary:
 	return {
 		"ring": [],
 		"cursor": 0,
-		"enabled": true
+		"enabled": true,
+		"level": 1,
+		"max_events": CAPACITY
 	}
 
 ## Export current runtime telemetry state.
@@ -45,7 +51,9 @@ static func pack_current() -> Dictionary:
 	return {
 		"ring": ring_copy,
 		"cursor": _cursor,
-		"enabled": _enabled
+		"enabled": _enabled,
+		"level": _level,
+		"max_events": _max_events
 	}
 
 ## Import a saved telemetry block back into runtime (sanitized).
@@ -59,11 +67,19 @@ static func unpack(d: Dictionary) -> void:
 	_cursor = int(d.get("cursor", 0))
 	if _cursor < 0:
 		_cursor = 0
+	# Import verbosity level and max size (optional in older saves)
+	_level = int(d.get("level", 1))
+	if _level < 0: _level = 0
+	if _level > 3: _level = 3
+	_max_events = int(d.get("max_events", CAPACITY))
+	if _max_events < 1: _max_events = 1
+	if _max_events > CAPACITY: _max_events = CAPACITY
 	var ring_in: Array = (d.get("ring", []) as Array)
-	# Keep at most CAPACITY entries; prefer newest entries if oversized
+	# Keep at most _max_events entries; prefer newest entries if oversized
+	var cap: int = min(_max_events, CAPACITY)
 	var trimmed: Array = ring_in
-	if ring_in.size() > CAPACITY:
-		trimmed = ring_in.slice(ring_in.size() - CAPACITY, ring_in.size())
+	if ring_in.size() > cap:
+		trimmed = ring_in.slice(ring_in.size() - cap, ring_in.size())
 	# Ensure only dictionaries are stored
 	var clean: Array = []
 	for ev in trimmed:
@@ -83,12 +99,17 @@ static func is_enabled() -> bool:
 	return _enabled
 
 ## Record a generic event into the ring. payload is merged and may override defaults.
-static func log_event(event_type: String, payload: Dictionary) -> void:
+static func log_event(event_type: String, payload: Dictionary, importance: int = 1) -> void:
 	if not _enabled:
 		return
+	if importance > _level:
+		return
 	var ev: Dictionary = _make_event(event_type, payload)
-	var idx: int = _cursor % CAPACITY
-	if _ring.size() < CAPACITY:
+	var cap: int = min(_max_events, CAPACITY)
+	if cap < 1:
+		cap = 1
+	var idx: int = _cursor % cap
+	if _ring.size() < cap:
 		# Grow or overwrite within current bounds
 		if idx < _ring.size():
 			_ring[idx] = ev
@@ -97,7 +118,39 @@ static func log_event(event_type: String, payload: Dictionary) -> void:
 	else:
 		# Full: overwrite oldest slot (true ring behavior)
 		_ring[idx] = ev
+	# advance cursor for every recorded event
 	_cursor += 1
+
+## Verbosity controls
+static func set_level(level: int) -> void:
+	_level = clampi(level, 0, 3)
+
+static func get_level() -> int:
+	return _level
+
+## Capacity controls (hard-capped by CAPACITY)
+static func set_max(max_events: int) -> void:
+	_max_events = max(1, min(max_events, CAPACITY))
+	# If current ring exceeds new cap, drop oldest
+	var cap: int = min(_max_events, CAPACITY)
+	if _ring.size() > cap:
+		_ring = _ring.slice(_ring.size() - cap, _ring.size())
+		# Reset cursor modulo cap to avoid huge modulo costs; keep monotonic nature by not resetting to 0
+
+static func get_max() -> int:
+	return _max_events
+
+## Readback helpers
+static func tail(n: int) -> Array:
+	var cap: int = min(_max_events, CAPACITY)
+	var k: int = max(0, min(n, cap))
+	if _ring.size() <= k:
+		return _ring.duplicate(true)
+	return _ring.slice(_ring.size() - k, _ring.size())
+
+static func clear() -> void:
+	_ring.clear()
+	_cursor = 0
 
 ## Convenience: log realm enter
 static func log_realm_enter(realm_id: String, stage_index: int) -> void:
@@ -159,5 +212,17 @@ static func _validate(d: Dictionary) -> Dictionary:
 	var en_ok: bool = (en_t == TYPE_BOOL) or (en_t == TYPE_INT) or (en_t == TYPE_FLOAT)
 	if not en_ok:
 		return {"ok": false, "message": "enabled must be boolean"}
+
+	# Optional: level in [0..3]
+	if d.has("level"):
+		var lvl: int = int(d.get("level"))
+		if lvl < 0 or lvl > 3:
+			return {"ok": false, "message": "level must be 0..3"}
+
+	# Optional: max_events in [1..CAPACITY]
+	if d.has("max_events"):
+		var mx: int = int(d.get("max_events"))
+		if mx < 1 or mx > CAPACITY:
+			return {"ok": false, "message": "max_events must be 1..%d" % CAPACITY}
 
 	return {"ok": true, "message": "OK"}

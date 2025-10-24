@@ -3,6 +3,8 @@ extends Node
 @onready var _ase_status_label: Label = get_node_or_null("AseStatusLabel")
 
 const AseTickService := preload("res://core/economy/AseTickService.gd")
+const EconomyServiceScript := preload("res://core/services/EconomyService.gd")
+@onready var _econ_service_inst: Node = EconomyServiceScript.new()
 
 ## Entry point of Echoes of the Sankofa MVP
 ## Headless-friendly: allows passing /seed_info via command line argument
@@ -49,12 +51,15 @@ func _run_headless_seed_info() -> void:
 
 
 func _on_ase_generated(amount: float, total_after: float, tick_index: int) -> void:
-	var saved_total := total_after
-	if has_node("/root/SaveService"):
-		saved_total = get_node("/root/SaveService").economy_add_ase(amount)
-	print("[AseTick] +%.2f → total=%.2f (tick %d) [saved=%.2f]" % [amount, total_after, tick_index, saved_total])
+	# Accumulate fractional Ase via EconomyService (commits whole units to banked)
+	var eff_after: float = total_after
+	if _econ_service_inst != null:
+		eff_after = _econ_service_inst.add_ase_float(amount)
+	# Query banked (int) via EconomyService static getters for clarity
+	var banked: int = int(EconomyServiceScript.get_ase_banked())
+	print("[AseTick] +%.2f → effective=%.2f, banked=%d (tick %d)" % [amount, eff_after, banked, tick_index])
 	if _ase_status_label:
-		_ase_status_label.text = "Ase: running — +%.2f (tick %d)" % [amount, tick_index]
+		_ase_status_label.text = "Ase: running — +%.2f (tick %d) • eff=%.2f • banked=%d" % [amount, tick_index, eff_after, banked]
 
 func _on_ase_state_changed(state: String) -> void:
 	if _ase_status_label:

@@ -36,6 +36,7 @@ var _integrity_signed: bool = false
 # Signals
 # -------------------------------------------------------------
 signal faith_changed(new_value: int)
+signal economy_changed(kind: String, delta: int, new_value: int)
 
 # -------------------------------------------------------------
 # Lifecycle hooks
@@ -177,31 +178,49 @@ func snapshot() -> Dictionary:
 # -------------------------------------------------------------
 # Economy & Emotions helpers (MVP)
 # -------------------------------------------------------------
+## Integer-first getters (MVP determinism)
+func economy_get_ase_int() -> int:
+	var eco: Dictionary = EconomyIO.pack_current()
+	if not eco.has("ase"):
+		eco["ase"] = 0
+		if not eco.has("yields"):
+			eco["yields"] = {"daily_ase": 0}
+		EconomyIO.unpack(eco)
+	var raw: Variant = eco.get("ase", 0)
+	var as_int: int = 0
+	if typeof(raw) == TYPE_FLOAT:
+		as_int = int(floor(float(raw)))
+	else:
+		as_int = int(raw)
+	if as_int < 0:
+		as_int = 0
+	return as_int
+
+func economy_get_ekwan() -> int:
+	var eco: Dictionary = EconomyIO.pack_current()
+	if not eco.has("ekwan"):
+		eco["ekwan"] = 0
+		EconomyIO.unpack(eco)
+	var raw: Variant = eco.get("ekwan", 0)
+	var val: int = int(raw)
+	if val < 0:
+		val = 0
+	return val
+
 ## Return current Ase from the economy block; bootstrap defaults if missing.
 func economy_get_ase() -> float:
-	var eco: Dictionary = EconomyIO.pack_current()
-	if not eco.has("ase"):
-		eco["ase"] = 0.0
-		if not eco.has("yields"):
-			eco["yields"] = {"daily_ase": 0.0}
-		EconomyIO.unpack(eco)
-	return float(eco.get("ase", 0.0))
+	return float(economy_get_ase_int())
 
-## Add Ase and write back into the economy block; returns new total.
-## Light autosave: every AUTOSAVE_TICKS or AUTOSAVE_SECONDS (whichever first).
-const AUTOSAVE_TICKS := 5
-const AUTOSAVE_SECONDS := 120.0
-var _autosave_tick_counter: int = 0
-var _last_autosave_unix: int = 0
+## Fractional buffer (runtime only)
+func economy_get_ase_buffer() -> float:
+	return max(0.0, _ase_buffer)
 
-func economy_add_ase(delta: float) -> float:
-	var eco: Dictionary = EconomyIO.pack_current()
-	if not eco.has("ase"):
-		eco["ase"] = 0.0
-	var cur := float(eco.get("ase", 0.0))
-	cur += float(delta)
-	eco["ase"] = cur
-	EconomyIO.unpack(eco)
+## Effective Ase = banked (int) + buffer (float)
+func economy_get_ase_effective() -> float:
+	return float(economy_get_ase_int()) + max(0.0, _ase_buffer)
+
+# Internal: shared autosave tick logic for economy mutations
+func _economy_touch_autosave() -> void:
 	_autosave_tick_counter += 1
 	var now_unix := Time.get_unix_time_from_system()
 	if _last_autosave_unix == 0:
@@ -210,7 +229,71 @@ func economy_add_ase(delta: float) -> float:
 		save_game()
 		_autosave_tick_counter = 0
 		_last_autosave_unix = now_unix
-	return cur
+
+const AUTOSAVE_TICKS := 5
+const AUTOSAVE_SECONDS := 120.0
+var _autosave_tick_counter: int = 0
+var _last_autosave_unix: int = 0
+# Fractional Ase buffer (runtime-only; committed in whole units)
+var _ase_buffer: float = 0.0
+
+func economy_add_ase(delta: float) -> float:
+	var applied_new: int = economy_adjust_ase(int(floor(delta)))
+	return float(applied_new)
+
+## Float-friendly adder: accumulates into buffer and commits whole units
+func economy_add_ase_float(delta: float) -> float:
+	if delta == 0.0:
+		return economy_get_ase_effective()
+	_ase_buffer += float(delta)
+
+	var whole: int = 0
+	if _ase_buffer >= 1.0:
+		whole = int(floor(_ase_buffer))
+	elif _ase_buffer <= -1.0:
+		whole = int(ceil(_ase_buffer))
+
+	if whole != 0:
+		var _new_banked: int = economy_adjust_ase(whole)  # commits in whole units
+		_ase_buffer -= float(whole)
+
+	return economy_get_ase_effective()
+
+## Adjustors (atomic, clamped ≥ 0); return the new balance
+func economy_adjust_ase(delta: int) -> int:
+	var eco: Dictionary = EconomyIO.pack_current()
+	var cur: int = economy_get_ase_int()
+	var new_value: int = cur + delta
+	if new_value < 0:
+		new_value = 0
+	var delta_applied: int = new_value - cur
+	if delta_applied == 0:
+		return new_value
+	eco["ase"] = new_value
+	if not eco.has("yields"):
+		eco["yields"] = {"daily_ase": 0}
+	EconomyIO.unpack(eco)
+	emit_signal("economy_changed", "ase", delta_applied, new_value)
+	_economy_touch_autosave()
+	return new_value
+
+func economy_adjust_ekwan(delta: int) -> int:
+	var eco: Dictionary = EconomyIO.pack_current()
+	var raw: Variant = eco.get("ekwan", 0)
+	var cur: int = int(raw)
+	if cur < 0:
+		cur = 0
+	var new_value: int = cur + delta
+	if new_value < 0:
+		new_value = 0
+	var delta_applied: int = new_value - cur
+	if delta_applied == 0:
+		return new_value
+	eco["ekwan"] = new_value
+	EconomyIO.unpack(eco)
+	emit_signal("economy_changed", "ekwan", delta_applied, new_value)
+	_economy_touch_autosave()
+	return new_value
 
 ## Persistent: read Faith from sanctum_state (0..100, default 60, clamped).
 func emotions_get_faith() -> int:
@@ -233,6 +316,48 @@ func emotions_set_faith(value: int) -> int:
 	_push_faith_to_runtime(clamped)
 	emit_signal("faith_changed", clamped)
 	return clamped
+
+# -------------------------------------------------------------
+# Telemetry helpers (verbosity-controlled ring buffer)
+# -------------------------------------------------------------
+## Set verbosity level (0=OFF, 1=INFO, 2=DEBUG, 3=LIVE)
+func telemetry_set_level(level: int) -> void:
+	TelemetryIO.set_level(level)
+
+## Get verbosity level
+func telemetry_get_level() -> int:
+	return TelemetryIO.get_level()
+
+## Set maximum ring capacity (soft cap)
+func telemetry_set_max(max_events: int) -> void:
+	TelemetryIO.set_max(max_events)
+
+## Append an event to the telemetry log if verbosity allows.
+## category: short string (e.g., "economy")
+## event: event type string (e.g., "trade")
+## data: dictionary of structured info
+## importance: int (0..3)
+func telemetry_append(category: String, event: String, data: Dictionary, importance: int = 1) -> void:
+	var current_level: int = TelemetryIO.get_level()
+	if not TelemetryIO.is_enabled():
+		return
+	if importance > current_level:
+		return
+	var payload: Dictionary = {
+		"evt": event,
+		"cat": category,
+		"ts": Time.get_unix_time_from_system(),
+		"data": data
+	}
+	TelemetryIO.log_event(event, payload, importance)
+
+## Retrieve last n events
+func telemetry_tail(n: int) -> Array:
+	return TelemetryIO.tail(n)
+
+## Clear telemetry log
+func telemetry_clear() -> void:
+	TelemetryIO.clear()
 # -------------------------------------------------------------
 # Validation & Migration (MVP — light checks)
 # -------------------------------------------------------------
@@ -436,6 +561,8 @@ func _assemble_root() -> Dictionary:
 		em["ase"] = 0.0
 	if not em.has("yields"):
 		em["yields"] = {"daily_ase": 0.0}
+	if not em.has("ekwan"):
+		em["ekwan"] = 0
 	var rc: Dictionary = ResearchCraftingIO.pack_current()
 	var lg: Dictionary = LegacyIO.pack_current()
 	var tl: Dictionary = TelemetryIO.pack_current()
@@ -501,6 +628,8 @@ func _apply_unpack(root: Dictionary) -> void:
 		em_runtime["ase"] = 0.0
 	if not em_runtime.has("yields"):
 		em_runtime["yields"] = {"daily_ase": 0.0}
+	if not em_runtime.has("ekwan"):
+		em_runtime["ekwan"] = 0
 	EconomyIO.unpack(em_runtime)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: research_crafting")
 	ResearchCraftingIO.unpack(root["research_crafting"] as Dictionary)

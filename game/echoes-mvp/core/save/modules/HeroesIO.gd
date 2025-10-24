@@ -1,122 +1,187 @@
 extends Resource
 class_name HeroesIO
 
-## HeroesIO — packs/unpacks the `hero_roster` module for SaveService (Task 4)
-## Schema (docs/schemas/json/hero_roster.schema.json):
-## {
-##   "active":    Hero[],
-##   "recovering":Hero[],
-##   "retired":   Hero[],
-##   "fallen":    Hero[]
-## }
-## Hero shape (schema-inspired):
-##   id: string
-##   name: string
-##   traits: { courage, ambition, empathy, wisdom, discipline, resolve } each 0..100
-##   stats:  { hp >= 0, morale 0..100, fear 0..100 }
-##   (optional) conditions: string[], bonds: string[], lineage_id: string, history: string[]
-##
-## Design notes (Task 4 scope):
-##   • Stateless adapter with static methods so SaveService can call directly.
-##   • pack_default()/pack_current() return empty roster; no dependency on future systems.
-##   • unpack() validates payload; wiring into a real Heroes subsystem is a later task.
+## HeroesIO — roster persistence module (Subtask 2)
+## Purpose: own the heroes roster block for SaveService, assign IDs, and provide a tiny API.
+## Design:
+##  • Instance-based state (_active, _recovering, _retired, _fallen, _next_id).
+##  • MVP-minimal hero schema at birth (name, rank, class, traits{courage,wisdom,faith}, seed, created_utc).
+##  • Validation accepts BOTH MVP-minimal and future rich schemas (stats, 6-traits, etc.).
+##  • IDs are assigned here (monotonic int starting at 1).
+##  • Active list is the working roster for MVP (recovering/retired/fallen reserved for later).
 
 # -------------------------------------------------------------
-# Public API used by SaveService (stateless)
+# Internal state (persisted via pack_current/unpack)
 # -------------------------------------------------------------
+var _active: Array[Dictionary] = []
+var _recovering: Array[Dictionary] = []
+var _retired: Array[Dictionary] = []
+var _fallen: Array[Dictionary] = []
+var _next_id: int = 1
 
-## Default roster for a brand new game (used by SaveService.new_game)
-static func pack_default() -> Dictionary:
+# -------------------------------------------------------------
+# SaveService-facing API
+# -------------------------------------------------------------
+func pack_default() -> Dictionary:
+	# Fresh campaign save shape. Keep future buckets for forward-compatibility.
 	return {
 		"active": [],
 		"recovering": [],
 		"retired": [],
-		"fallen": []
+		"fallen": [],
+		"next_id": 1
 	}
 
-## Export current runtime roster.
-## Task 4: stateless → return defaults.
-## Later: read from your Heroes subsystem/registry.
-static func pack_current() -> Dictionary:
-	return pack_default()
+func pack_current() -> Dictionary:
+	return {
+		"active": _clone_array(_active),
+		"recovering": _clone_array(_recovering),
+		"retired": _clone_array(_retired),
+		"fallen": _clone_array(_fallen),
+		"next_id": _next_id
+	}
 
-## Import a saved roster back into runtime.
-## Task 4: validate only; real writes happen when the subsystem exists.
-static func unpack(d: Dictionary) -> void:
-	var res := _validate(d)
+func unpack(d: Dictionary) -> void:
+	# Defensive defaults
+	var data := d if typeof(d) == TYPE_DICTIONARY else {}
+	var res := _validate_roster(data)
 	if not res.ok:
 		push_warning("HeroesIO.unpack: invalid data: %s" % res.message)
+		# Reset to defaults on invalid input
+		var def := pack_default()
+		_active = def.active
+		_recovering = def.recovering
+		_retired = def.retired
+		_fallen = def.fallen
+		_next_id = def.next_id
 		return
-	# TODO (later): write heroes into your runtime hero manager/registry
-	pass
+
+	_active = _sanitize_list(data.get("active", []))
+	_recovering = _sanitize_list(data.get("recovering", []))
+	_retired = _sanitize_list(data.get("retired", []))
+	_fallen = _sanitize_list(data.get("fallen", []))
+
+	# next_id: prefer saved value; if missing or bad, compute from max existing id + 1
+	var saved_next: Variant = data.get("next_id", null)
+	if typeof(saved_next) == TYPE_INT and int(saved_next) >= 1:
+		_next_id = int(saved_next)
+	else:
+		_next_id = _compute_next_id()
 
 # -------------------------------------------------------------
-# Validation (schema-inspired, fast, no deps)
+# Roster operations (used by services/UI/tests)
 # -------------------------------------------------------------
-static func _validate(d: Dictionary) -> Dictionary:
+func append_hero(hero: Dictionary) -> int:
+	# Validate minimal MVP hero shape; do NOT trust incoming id.
+	var v := _validate_hero(hero)
+	if not v.ok:
+		push_warning("HeroesIO.append_hero: rejecting hero: %s" % v.message)
+		return -1
+
+	var clean := hero.duplicate(true)
+	clean["id"] = _next_id
+	_next_id += 1
+	_active.append(clean)
+	return int(clean["id"]) 
+
+func get_roster() -> Array[Dictionary]:
+	# MVP: return active roster only; future: concatenate other buckets if needed.
+	return _clone_array(_active)
+
+func get_hero_by_id(id: int) -> Dictionary:
+	for h in _active:
+		if int(h.get("id", -1)) == id:
+			return h.duplicate(true)
+	for h in _recovering:
+		if int(h.get("id", -1)) == id:
+			return h.duplicate(true)
+	for h in _retired:
+		if int(h.get("id", -1)) == id:
+			return h.duplicate(true)
+	for h in _fallen:
+		if int(h.get("id", -1)) == id:
+			return h.duplicate(true)
+	return {}
+
+func count() -> int:
+	return _active.size()
+
+# -------------------------------------------------------------
+# Validation helpers — permissive for MVP, stricter later
+# -------------------------------------------------------------
+func _validate_roster(d: Dictionary) -> Dictionary:
 	for k in ["active","recovering","retired","fallen"]:
 		if not d.has(k):
 			return {"ok": false, "message": "Missing key: %s" % k}
 		if typeof(d[k]) != TYPE_ARRAY:
 			return {"ok": false, "message": "%s must be array" % k}
-		# Validate each hero object in the list
 		for h in (d[k] as Array):
-			var hero_res := _validate_hero(h)
-			if not hero_res.ok:
-				return hero_res
+			var hr := _validate_hero(h)
+			if not hr.ok:
+				return hr
 	return {"ok": true, "message": "OK"}
 
-static func _validate_hero(h: Variant) -> Dictionary:
+func _validate_hero(h: Variant) -> Dictionary:
 	if typeof(h) != TYPE_DICTIONARY:
 		return {"ok": false, "message": "hero must be object"}
 	var hd := h as Dictionary
-	for req in ["id","name","traits","stats"]:
-		if not hd.has(req):
-			return {"ok": false, "message": "hero missing %s" % req}
-	if typeof(hd.id) != TYPE_STRING or hd.id == "":
-		return {"ok": false, "message": "hero.id must be non-empty string"}
-	if typeof(hd.name) != TYPE_STRING or hd.name == "":
-		return {"ok": false, "message": "hero.name must be non-empty string"}
 
-	# Traits 0..100
-	if typeof(hd.traits) != TYPE_DICTIONARY:
-		return {"ok": false, "message": "hero.traits must be object"}
-	var tr := hd.traits as Dictionary
-	for t in ["courage","ambition","empathy","wisdom","discipline","resolve"]:
-		if typeof(tr.get(t, null)) != TYPE_INT:
-			return {"ok": false, "message": "hero.traits.%s must be int" % t}
-		var v: int = tr[t]
-		if v < 0 or v > 100:
-			return {"ok": false, "message": "hero.traits.%s out of range" % t}
+	# --- MVP minimal requirements ---
+	# name:String, rank:int, class:String, traits:{courage,wisdom,faith:int}, seed:int (optional), created_utc:String (optional)
+	var has_name := typeof(hd.get("name", null)) == TYPE_STRING and String(hd.name) != ""
+	var has_rank := typeof(hd.get("rank", null)) == TYPE_INT
+	var has_class := typeof(hd.get("class", null)) == TYPE_STRING
+	var traits_ok := false
+	if typeof(hd.get("traits", null)) == TYPE_DICTIONARY:
+		var tr := hd.traits as Dictionary
+		var req := ["courage","wisdom","faith"]
+		traits_ok = true
+		for t in req:
+			if typeof(tr.get(t, null)) != TYPE_INT:
+				traits_ok = false
+				break
 
-	# Stats hp>=0, morale/fear 0..100
-	if typeof(hd.stats) != TYPE_DICTIONARY:
-		return {"ok": false, "message": "hero.stats must be object"}
-	var st := hd.stats as Dictionary
-	for reqs in ["hp","morale","fear"]:
-		if typeof(st.get(reqs, null)) != TYPE_INT:
-			return {"ok": false, "message": "hero.stats.%s must be int" % reqs}
-	var hp: int = st.hp
-	var morale: int = st.morale
-	var fear: int = st.fear
-	if hp < 0:
-		return {"ok": false, "message": "hero.stats.hp must be >= 0"}
-	if morale < 0 or morale > 100:
-		return {"ok": false, "message": "hero.stats.morale out of range"}
-	if fear < 0 or fear > 100:
-		return {"ok": false, "message": "hero.stats.fear out of range"}
+	if has_name and has_rank and has_class and traits_ok:
+		return {"ok": true, "message": "OK (MVP)"}
 
-	# Optional arrays checking (conditions, bonds, history) if present
-	for arr_key in ["conditions","bonds","history"]:
-		if hd.has(arr_key):
-			if typeof(hd[arr_key]) != TYPE_ARRAY:
-				return {"ok": false, "message": "hero.%s must be array if present" % arr_key}
-			for item in (hd[arr_key] as Array):
-				if typeof(item) != TYPE_STRING:
-					return {"ok": false, "message": "hero.%s must contain strings" % arr_key}
+	# --- Future richer schema (backward-compat) ---
+	# Accept earlier scaffold with stats and 6-trait model
+	if typeof(hd.get("traits", null)) == TYPE_DICTIONARY and typeof(hd.get("stats", null)) == TYPE_DICTIONARY:
+		var tr2 := hd.traits as Dictionary
+		var st2 := hd.stats as Dictionary
+		var six := ["courage","ambition","empathy","wisdom","discipline","resolve"]
+		var six_ok := true
+		for t2 in six:
+			if typeof(tr2.get(t2, null)) != TYPE_INT:
+				six_ok = false
+				break
+		var stats_ok := typeof(st2.get("hp", null)) == TYPE_INT and typeof(st2.get("morale", null)) == TYPE_INT and typeof(st2.get("fear", null)) == TYPE_INT
+		if six_ok and stats_ok and has_name:
+			return {"ok": true, "message": "OK (legacy rich)"}
 
-	# Optional lineage_id
-	if hd.has("lineage_id") and typeof(hd.lineage_id) != TYPE_STRING:
-		return {"ok": false, "message": "hero.lineage_id must be string if present"}
+	return {"ok": false, "message": "hero does not match MVP or legacy schema"}
 
-	return {"ok": true, "message": "OK"}
+# -------------------------------------------------------------
+# Utilities
+# -------------------------------------------------------------
+func _clone_array(src: Array) -> Array:
+	var out: Array = []
+	for it in src:
+		out.append(it.duplicate(true) if typeof(it) == TYPE_DICTIONARY else it)
+	return out
+
+func _sanitize_list(src: Array) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for it in src:
+		if typeof(it) == TYPE_DICTIONARY:
+			out.append(it as Dictionary)
+	return out
+
+func _compute_next_id() -> int:
+	var max_id := 0
+	for arr in [_active, _recovering, _retired, _fallen]:
+		for h in arr:
+			var hid := int(h.get("id", 0))
+			if hid > max_id:
+				max_id = hid
+	return max_id + 1
