@@ -1,5 +1,3 @@
-
-
 # core/combat/EnemyFactory.gd
 # -----------------------------------------------------------------------------
 # MVP enemy generator: deterministic dummy packs for early combat testing.
@@ -30,20 +28,20 @@ const DUMMY_BASE := {
 ## @param seed  int - explicit seed to ensure reproducible outputs
 ## @return Array[Dictionary] - enemies in stable order (id asc)
 static func spawn_dummy_pack(count: int, seed: int) -> Array[Dictionary]:
-	var n := max(count, 0)
+	var n: int = max(count, 0)
 	# We set up an RNG for future tiny variations, but keep MVP dummies fixed.
 	# Keeping the RNG seeded ensures we can introduce realm-based variance later
 	# without breaking the signature or determinism guarantees.
-	var rng := RandomNumberGenerator.new()
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed
 
 	var out: Array[Dictionary] = []
 	for i in range(n):
-		var local_id := 1000 + i  # avoid clashing with typical hero ids
-		var name := "Training Wraith #%d" % (i + 1)
+		var local_id: int = 1000 + i  # avoid clashing with typical hero ids
+		var name: String = "Training Wraith #%d" % (i + 1)
 
 		# Copy baseline and build the dictionary explicitly (no mutation of const)
-		var enemy := {
+		var enemy: Dictionary = {
 			"id": local_id,
 			"name": name,
 			"rank": DUMMY_BASE.rank,
@@ -59,5 +57,5 @@ static func spawn_dummy_pack(count: int, seed: int) -> Array[Dictionary]:
 		out.append(enemy)
 
 	# Defensive: ensure stable order by id even if future variants add shuffling.
-	out.sort_custom(func(a, b): return int(a.id) < int(b.id))
+	out.sort_custom(func(a, b): return int(a["id"]) < int(b["id"]))
 	return out

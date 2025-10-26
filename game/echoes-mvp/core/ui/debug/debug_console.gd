@@ -18,6 +18,9 @@ var _commands := {}
 var _econ_live_active: bool = false
 var _econ_live_sum: float = 0.0
 var _econ_live_count: int = 0
+# --- Combat demo session state (Subtask 9) ---
+var _staged_party: Array[int] = []
+var _last_fight: Dictionary = {}  # { seed:int, rounds:int, party_ids:Array[int>, enemy_count:int }
 var _econ_live_service: Node = null
 
 # Shared preloads
@@ -28,6 +31,10 @@ const SummonServiceScript = preload("res://core/services/SummonService.gd")
 const EchoConstants = preload("res://core/echoes/EchoConstants.gd")
 const PersonalityArchetype = preload("res://core/echoes/PersonalityArchetype.gd")
 const ArchetypeBarks = preload("res://core/echoes/ArchetypeBarks.gd")
+const PartyRoster = preload("res://core/combat/PartyRoster.gd")
+const EnemyFactory = preload("res://core/combat/EnemyFactory.gd")
+const CombatEngine = preload("res://core/combat/CombatEngine.gd")
+const CombatLog = preload("res://core/combat/CombatLog.gd")
 @onready var _econ_service_inst: Node = EconomyServiceScript.new()
 
 # Optional: attach a label later without hard dependency
@@ -875,6 +882,145 @@ func _register_default_commands() -> void:
 				_print_line("Usage: /telemetry <level|max|tail|clear> [value]")
 				return 1
 
+	# --- Combat: party & fights (Subtask 9) -----------------------------------
+	_commands["/party_list"] = func(_args: Array) -> int:
+		var ss_dict: Dictionary = _read_save_snapshot()
+		var avail: Array[Dictionary] = PartyRoster.list_available_allies(ss_dict)
+		if avail.is_empty():
+			_print_line("[party_list] no available heroes")
+			return 0
+		_print_line("[party_list] %d available:" % avail.size())
+		for h in avail:
+			var hh: Dictionary = _hydrate_hero_for_display(h)
+			var id_i: int = int(hh.get("id", -1))
+			_print_line(" - " + _format_hero_summary(hh) + " [id=%d]" % id_i)
+		return 0
+
+	_commands["/party_set"] = func(args: Array) -> int:
+		# Usage: /party_set <ids...>
+		if args.is_empty():
+			_print_line("Usage: /party_set <ids...>")
+			return 1
+		var ids_text: String = " ".join(args)
+		var ids_raw: Array = ids_text.split(",")
+		var ids_flat: Array = []
+		for piece in ids_raw:
+			var parts: Array = String(piece).strip_edges().split(" ")
+			for p in parts:
+				if p == "":
+					continue
+				ids_flat.append(p)
+		var ids_norm: Array[int] = PartyRoster.normalize_ids(ids_flat)
+		if ids_norm.is_empty():
+			_print_line("[party_set] no valid ids; example: /party_set 1 2 3")
+			return 1
+		var ss_dict: Dictionary = _read_save_snapshot()
+		var res: Dictionary = PartyRoster.validate_party(ss_dict, ids_norm, 3)
+		if not bool(res.get("ok", false)):
+			_print_line("[party_set] invalid party:")
+			for e in (res.get("errors", []) as Array):
+				_print_line(" - %s" % String(e))
+			return 2
+		_staged_party = ids_norm
+		_print_line("[party_set] Party set: %s" % str(ids_norm))
+		return 0
+
+	_commands["/party_show"] = func(_args: Array) -> int:
+		if _staged_party.is_empty():
+			_print_line("[party_show] no staged party (use /party_set or /party_list)")
+			return 0
+		_print_line("[party_show] %d heroes:" % _staged_party.size())
+		var idx: int = 1
+		for pid in _staged_party:
+			var id_i: int = int(pid)
+			var stub: Dictionary = {"id": id_i}
+			var hfull: Dictionary = _hydrate_hero_for_display(stub)
+			_print_line(" %d) %s" % [idx, _format_hero_summary(hfull)])
+			idx += 1
+		return 0
+
+	_commands["/party_clear"] = func(_args: Array) -> int:
+		_staged_party.clear()
+		_print_line("[party_clear] cleared")
+		return 0
+
+	_commands["/fight_demo"] = func(args: Array) -> int:
+		# Usage: /fight_demo [seed] [rounds=5] [--auto]
+		var seed_text: String = ""
+		var rounds: int = 5
+		var use_auto: bool = false
+		if args.size() > 0:
+			seed_text = String(args[0])
+		if args.size() > 1 and String(args[1]).is_valid_int():
+			rounds = clampi(int(args[1]), 1, 50)
+		for a in args:
+			if String(a) == "--auto":
+				use_auto = true
+		var seed_val: Variant = _parse_seed(seed_text)
+		if seed_val == null:
+			seed_val = 0
+
+		# Determine party
+		var party_ids: Array[int] = []
+		for pid in _staged_party:
+			party_ids.append(int(pid))
+		if party_ids.is_empty() and use_auto:
+			var ss_dict: Dictionary = _read_save_snapshot()
+			var avail: Array[Dictionary] = PartyRoster.list_available_allies(ss_dict)
+			for h in avail:
+				if party_ids.size() >= 3:
+					break
+				party_ids.append(int(h.get("id", -1)))
+		if party_ids.is_empty():
+			_print_line("[fight_demo] no party set. Use /party_set or add --auto")
+			return 1
+
+		# Validate party
+		var ss_dict2: Dictionary = _read_save_snapshot()
+		var res: Dictionary = PartyRoster.validate_party(ss_dict2, party_ids, 3)
+		if not bool(res.get("ok", false)):
+			_print_line("[fight_demo] invalid party:")
+			for e in (res.get("errors", []) as Array):
+				_print_line(" - %s" % String(e))
+			return 2
+
+		# Enemies and engine
+		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(3, int(seed_val))
+		var eng := CombatEngine.new()
+		eng.start_battle(int(seed_val), party_ids, enemies, "defeat", rounds)
+		var log := CombatLog.new(16)
+		_print_line("[fight_demo] party=%s seed=%d rounds=%d" % [str(party_ids), int(seed_val), rounds])
+		while not eng.is_over():
+			var snap: Dictionary = eng.step_round()
+			log.print_round(snap)
+		_print_line("[fight_demo] result: %s" % str(eng.result()))
+		_last_fight = {
+			"seed": int(seed_val),
+			"rounds": rounds,
+			"party_ids": party_ids,
+			"enemy_count": 3,
+		}
+		return 0
+
+	_commands["/fight_again"] = func(_args: Array) -> int:
+		if _last_fight.is_empty():
+			_print_line("[fight_again] nothing to replay (run /fight_demo first)")
+			return 1
+		var seed_v: int = int(_last_fight.get("seed", 0))
+		var rounds: int = int(_last_fight.get("rounds", 5))
+		var party_ids: Array[int] = _last_fight.get("party_ids", [])
+		var enemy_count: int = int(_last_fight.get("enemy_count", 3))
+		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(enemy_count, seed_v)
+		var eng := CombatEngine.new()
+		eng.start_battle(seed_v, party_ids, enemies, "defeat", rounds)
+		var log := CombatLog.new(16)
+		_print_line("[fight_again] party=%s seed=%d rounds=%d" % [str(party_ids), seed_v, rounds])
+		while not eng.is_over():
+			var snap: Dictionary = eng.step_round()
+			log.print_round(snap)
+		_print_line("[fight_again] result: %s" % str(eng.result()))
+		return 0
+
 
 
 # --- Private helpers ---
@@ -975,6 +1121,87 @@ func _finish_live_summary() -> void:
 	_econ_live_service = null
 	_econ_live_sum = 0.0
 	_econ_live_count = 0
+
+func _read_save_snapshot() -> Dictionary:
+	var ss_dict: Dictionary = {}
+	# Prefer engine singleton if present
+	if Engine.has_singleton("SaveService"):
+		var svc = Engine.get_singleton("SaveService")
+		if svc and svc.has_method("snapshot"):
+			var v: Variant = svc.call("snapshot")
+			if typeof(v) == TYPE_DICTIONARY:
+				ss_dict = v
+				return ss_dict
+	# Fallback to direct autoload script API (used elsewhere in file)
+	if typeof(SaveService) != TYPE_NIL and SaveService.has_method("snapshot"):
+		ss_dict = SaveService.snapshot()
+		return ss_dict
+	# Minimal fallback: build roster from heroes_list if available
+	if typeof(SaveService) != TYPE_NIL and SaveService.has_method("heroes_list"):
+		var roster: Array = SaveService.heroes_list()
+		ss_dict["hero_roster"] = {"active": roster}
+	return ss_dict
+
+# Helper: Hydrate hero dictionary for display (merge missing fields from SaveService if needed)
+func _hydrate_hero_for_display(h: Dictionary) -> Dictionary:
+	# Merge missing display fields from SaveService.hero_get(id) if possible (display-only).
+	var out: Dictionary = {}
+	for k in h.keys():
+		out[k] = h[k]
+	var id_val: int = int(out.get("id", -1))
+	if id_val < 0:
+		return out
+	# Determine if hydration is needed
+	var need_name: bool = str(out.get("name", "")) == "" or str(out.get("name", "")).begins_with("Hero ")
+	var need_arch: bool = str(out.get("archetype", "")) == "" or str(out.get("archetype", "")) == "n/a"
+	var need_gender: bool = str(out.get("gender", "?")) == "?"
+	var traits_dict: Dictionary = out.get("traits", {})
+	var c0: int = int(traits_dict.get("courage", 0))
+	var w0: int = int(traits_dict.get("wisdom", 0))
+	var f0: int = int(traits_dict.get("faith", 0))
+	var need_traits: bool = (c0 == 0 and w0 == 0 and f0 == 0)
+	var need_rank: bool = int(out.get("rank", 0)) == 0
+	var need_class: bool = str(out.get("class", "")) == "" or str(out.get("class", "")) == "none"
+	if not (need_name or need_arch or need_gender or need_traits or need_rank or need_class):
+		return out
+	# Fetch full hero record
+	var src: Dictionary = {}
+	if Engine.has_singleton("SaveService"):
+		var svc = Engine.get_singleton("SaveService")
+		if svc and svc.has_method("hero_get"):
+			var v: Variant = svc.call("hero_get", id_val)
+			if typeof(v) == TYPE_DICTIONARY:
+				src = v
+	if src.is_empty() and typeof(SaveService) != TYPE_NIL and SaveService.has_method("hero_get"):
+		var v2: Variant = SaveService.hero_get(id_val)
+		if typeof(v2) == TYPE_DICTIONARY:
+			src = v2
+	if src.is_empty():
+		return out
+	# Merge selected fields
+	if src.has("name"):
+		out["name"] = str(src.get("name", out.get("name", "")))
+	if src.has("rank"):
+		out["rank"] = int(src.get("rank", out.get("rank", 1)))
+	if src.has("class"):
+		out["class"] = str(src.get("class", out.get("class", "none")))
+	if src.has("archetype"):
+		out["archetype"] = str(src.get("archetype", out.get("archetype", "n/a")))
+	if src.has("gender"):
+		out["gender"] = str(src.get("gender", out.get("gender", "?")))
+	# Traits (prefer nested `traits` dict)
+	if src.has("traits") and typeof(src["traits"]) == TYPE_DICTIONARY:
+		out["traits"] = src["traits"]
+	else:
+		var merged_traits: Dictionary = traits_dict
+		if src.has("courage"):
+			merged_traits["courage"] = int(src.get("courage", merged_traits.get("courage", 0)))
+		if src.has("wisdom"):
+			merged_traits["wisdom"] = int(src.get("wisdom", merged_traits.get("wisdom", 0)))
+		if src.has("faith"):
+			merged_traits["faith"] = int(src.get("faith", merged_traits.get("faith", 0)))
+		out["traits"] = merged_traits
+	return out
 
 func _parse_seed(s: String) -> Variant:
 	# Accept formats: decimal int, hex with 0x, or empty -> null

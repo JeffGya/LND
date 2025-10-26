@@ -1,5 +1,3 @@
-
-
 # core/combat/PartyRoster.gd
 # -----------------------------------------------------------------------------
 # Deterministic, side‑effect‑free helpers for building a legal player party.
@@ -30,8 +28,8 @@ const UNAVAILABLE_STATUSES := ["on_mission", "resting"]
 ## @return Array[Dictionary] - each entry is a light hero summary:
 ##         { id:int, name:String, arch:String, hp:int, status:String }
 static func list_available_allies(ss: Dictionary) -> Array[Dictionary]:
-	var active := _read_active_list(ss)
-	var now_iso := _read_now_utc(ss)
+	var active: Array[Dictionary] = _read_active_list(ss)
+	var now_iso: String = _read_now_utc(ss)
 
 	var out: Array[Dictionary] = []
 	for hero in active:
@@ -46,7 +44,7 @@ static func list_available_allies(ss: Dictionary) -> Array[Dictionary]:
 			})
 
 	# Deterministic ordering (by id asc) so downstream behavior is reproducible.
-	out.sort_custom(func(a, b): return int(a.id) < int(b.id))
+	out.sort_custom(func(a, b): return int(a["id"]) < int(b["id"]))
 	return out
 
 
@@ -68,13 +66,13 @@ static func validate_party(ss: Dictionary, ids: Array, max_size: int = 3) -> Dic
 		errors.append("party too large: %d > %d" % [party.size(), max_size])
 
 	# Build a quick lookup of active and available heroes
-	var active := _read_active_list(ss)
+	var active: Array[Dictionary] = _read_active_list(ss)
 	var active_by_id: Dictionary = {}
 	for h in active:
 		active_by_id[int(h.get("id", 0))] = h
 
-	var available_ids := {}
-	var now_iso := _read_now_utc(ss)
+	var available_ids: Dictionary = {}
+	var now_iso: String = _read_now_utc(ss)
 	for h in active:
 		if _is_hero_available(h, now_iso):
 			available_ids[int(h.get("id", 0))] = true
@@ -84,8 +82,11 @@ static func validate_party(ss: Dictionary, ids: Array, max_size: int = 3) -> Dic
 		if not active_by_id.has(id):
 			errors.append("unknown hero id: %d" % id)
 		elif not available_ids.has(id):
-			var st := str(active_by_id[id].get("status", ""))
-			errors.append("id not available: %d%s" % [id, st != "" ? " (status=%s)" % st : ""]) 
+			var st: String = str(active_by_id[id].get("status", ""))
+			var suffix: String = ""
+			if st != "":
+				suffix = " (status=%s)" % st
+			errors.append("id not available: %d%s" % [id, suffix])
 
 	return {
 		"ok": errors.is_empty(),
@@ -100,9 +101,9 @@ static func validate_party(ss: Dictionary, ids: Array, max_size: int = 3) -> Dic
 ##  - removes duplicates while preserving the first occurrence order
 static func normalize_ids(ids: Array) -> Array[int]:
 	var out: Array[int] = []
-	var seen := {}
+	var seen: Dictionary = {}
 	for v in ids:
-		var id_val := _to_int_or_neg1(v)
+		var id_val: int = _to_int_or_neg1(v)
 		if id_val < 0:
 			continue
 		if not seen.has(id_val):
@@ -117,8 +118,8 @@ static func normalize_ids(ids: Array) -> Array[int]:
 
 ## Returns an Array of hero Dictionaries (may be empty). Tolerates missing paths.
 static func _read_active_list(ss: Dictionary) -> Array[Dictionary]:
-	var roster := ss.get("hero_roster", {})
-	var active := roster.get("active", [])
+	var roster: Dictionary = ss.get("hero_roster", {})
+	var active: Array = roster.get("active", [])
 	# Ensure we only return dictionaries (defensive against bad data)
 	var out: Array[Dictionary] = []
 	for h in active:
@@ -128,25 +129,25 @@ static func _read_active_list(ss: Dictionary) -> Array[Dictionary]:
 
 ## Returns ISO utc string from snapshot or a safe default.
 static func _read_now_utc(ss: Dictionary) -> String:
-	var sanctum := ss.get("sanctum_state", {})
-	var now_iso := str(sanctum.get("now_utc", ""))
+	var sanctum: Dictionary = ss.get("sanctum_state", {})
+	var now_iso: String = str(sanctum.get("now_utc", ""))
 	return now_iso
 
 ## MVP availability predicate. Missing data ⇒ we err on the side of available.
 static func _is_hero_available(hero: Dictionary, now_iso: String) -> bool:
 	# Status gate (missing = available)
-	var status := str(hero.get("status", ""))
+	var status: String = str(hero.get("status", ""))
 	if status in UNAVAILABLE_STATUSES:
 		return false
 
 	# Downed (hp <= 0) if stats are present; missing stats ⇒ assume available
-	var stats := hero.get("stats", {})
+	var stats: Dictionary = hero.get("stats", {})
 	if typeof(stats) == TYPE_DICTIONARY and stats.has("hp"):
 		if int(stats.hp) <= 0:
 			return false
 
 	# Injury timer (if present): available only when injured_until_utc <= now
-	var injured_until := str(hero.get("injured_until_utc", ""))
+	var injured_until: String = str(hero.get("injured_until_utc", ""))
 	if injured_until != "" and now_iso != "":
 		# Lexicographic compare works for RFC 3339/ISO 8601 Zulu timestamps
 		if injured_until > now_iso:
@@ -162,8 +163,11 @@ static func _to_int_or_neg1(v) -> int:
 		TYPE_STRING:
 			var s: String = v.strip_edges()
 			if s.is_valid_int():
-				var parsed := int(s)
-				return parsed >= 0 ? parsed : -1
+				var parsed: int = int(s)
+				if parsed >= 0:
+					return parsed
+				else:
+					return -1
 			return -1
 		_:
 			return -1

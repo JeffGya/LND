@@ -1,5 +1,3 @@
-
-
 # core/combat/CombatConstants.gd
 # -----------------------------------------------------------------------------
 # Single source of truth for combat-related enums and gentle MVP tuning knobs.
@@ -67,7 +65,7 @@ static func clamp_morale(morale: int) -> int:
 
 ## Maps a raw morale (0..100) to a coarse MoraleTier.
 static func morale_tier(morale: int) -> int:
-	var m := clamp_morale(morale)
+	var m: int = clamp_morale(morale)
 	if m >= INSPIRED_MIN:
 		return MoraleTier.INSPIRED
 	elif m >= STEADY_MIN:
@@ -88,6 +86,8 @@ static func morale_multiplier_for(morale: int) -> float:
 ## Computes a simple MVP damage preview given attacker atk, defender def,
 ## and the attacker's morale. Resolver can call this and then apply KO logic.
 static func compute_mvp_damage(atk: int, defense: int, attacker_morale: int) -> int:
-	var mult := morale_multiplier_for(attacker_morale)
-	var raw := int(round(atk * BASE_ATTACK_MULT * mult)) - max(defense, 0)
+	var mult: float = morale_multiplier_for(attacker_morale)
+	var pre: float = float(atk) * BASE_ATTACK_MULT * mult
+	var pre_int: int = int(round(pre))
+	var raw: int = pre_int - max(defense, 0)
 	return max(raw, DAMAGE_FLOOR)
