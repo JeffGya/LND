@@ -32,6 +32,9 @@ var _content_hash: String = ""   # SHA-256 of JSON with content_hash cleared
 
 var _integrity_signed: bool = false
 
+# Heroes roster module (instance-based)
+var _heroes_io: HeroesIO = HeroesIO.new()
+
 # -------------------------------------------------------------
 # Signals
 # -------------------------------------------------------------
@@ -60,7 +63,7 @@ func new_game(campaign_seed: int) -> void:
 		"player_profile": PlayerProfileIO.pack_default(),
 		"campaign_run": CampaignRunIO.pack_new(campaign_seed),
 		"sanctum_state": SanctumIO.pack_default(),
-		"hero_roster": HeroesIO.pack_default(),
+		"hero_roster": _heroes_io.pack_default(),
 		"realm_states": RealmsIO.pack_default(),
 		"economy": EconomyIO.pack_default(),
 		"research_crafting": ResearchCraftingIO.pack_default(),
@@ -74,6 +77,16 @@ func new_game(campaign_seed: int) -> void:
 	_created_utc = root["created_utc"]
 	_last_saved_utc = root["last_saved_utc"]
 	_apply_unpack(root)  # populate runtime from this root
+	# --- Starter Hero (free on New Game) -------------------------------------
+	# Deterministic but isolated from paid summons via RNG_CHANNEL_STARTER.
+	# We grant exactly one Rank-1 Echo (class="none") without spending Ase.
+	var starter_seed: int = get_campaign_seed()  # now available after unpack
+	var roster_count: int = _heroes_io.count()   # should be 0 for a fresh campaign
+	var now_utc: String = _now_iso8601_utc()
+	var starter_hero: Dictionary = EchoFactory.summon_one_starter(starter_seed, roster_count, now_utc)
+	var starter_id: int = _heroes_io.append_hero(starter_hero)
+	# (Optional) Telemetry: record the free grant at campaign start
+	telemetry_append("heroes", "starter_granted", {"id": starter_id, "name": starter_hero.get("name", ""), "seed": starter_hero.get("seed", 0)}, 1)
 	var f_new := emotions_get_faith()
 	_push_faith_to_runtime(f_new)
 	emit_signal("faith_changed", f_new)
@@ -174,6 +187,43 @@ func load_game(path: String = SAVE_PATH) -> bool:
 ## Return a full root dictionary assembled from current runtime state.
 func snapshot() -> Dictionary:
 	return _assemble_root()
+
+## --- Heroes roster thin wrappers ---
+func heroes_add(hero_dict: Dictionary) -> int:
+	# Assigns id and persists in-memory via HeroesIO
+	var new_id: int = _heroes_io.append_hero(hero_dict)
+
+	# Telemetry: emit a per-hero event so tails list newly created heroes (summons, etc.).
+	# Shape mirrors the starter_granted data (id, name, seed) and includes archetype when present.
+	var t_data: Dictionary = {
+		"id": new_id,
+		"name": String(hero_dict.get("name", "")),
+		"seed": int(hero_dict.get("seed", 0))
+	}
+	if hero_dict.has("archetype"):
+		t_data["arch"] = String(hero_dict.get("archetype", ""))
+
+	# Importance 1 so it shows at normal telemetry verbosity.
+	telemetry_append("heroes", "hero_added", t_data, 1)
+
+	return new_id
+
+func heroes_list() -> Array:
+	return _heroes_io.get_roster()
+
+
+func hero_get(id: int) -> Dictionary:
+	return _heroes_io.get_hero_by_id(id)
+
+## Expose the campaign seed as an int for deterministic factories (used by SummonService)
+func get_campaign_seed() -> int:
+	var cr: Dictionary = CampaignRunIO.pack_current()
+	var rng_book: Dictionary = (cr.get("rng_book", {}) as Dictionary)
+	var s: String = String(rng_book.get("campaign_seed", "0"))
+	var v: int = 0
+	# Basic parsing: interpret plain decimal; extend later for hex strings if needed.
+	v = int(s)
+	return v
 
 # -------------------------------------------------------------
 # Economy & Emotions helpers (MVP)
@@ -457,12 +507,21 @@ func validate(root: Dictionary) -> Dictionary:
 			if typeof(h) != TYPE_DICTIONARY:
 				return {"ok": false, "message": "hero_roster.%s must contain objects" % bucket}
 			var hd: Dictionary = h as Dictionary
-			var hid: String = String(hd.get("id", ""))
-			if hid == "":
-				return {"ok": false, "message": "hero without id in %s" % bucket}
-			if id_set.has(hid):
-				return {"ok": false, "message": "duplicate hero id: %s" % hid}
-			id_set[hid] = true
+			var raw_id: Variant = hd.get("id", null)
+			var id_str: String = ""
+			if typeof(raw_id) == TYPE_INT:
+				if int(raw_id) < 1:
+					return {"ok": false, "message": "hero id must be >= 1 (int) in %s" % bucket}
+				id_str = str(int(raw_id))
+			elif typeof(raw_id) == TYPE_STRING:
+				id_str = String(raw_id)
+				if id_str == "":
+					return {"ok": false, "message": "hero id must be non-empty string in %s" % bucket}
+			else:
+				return {"ok": false, "message": "hero id must be int or string in %s" % bucket}
+			if id_set.has(id_str):
+				return {"ok": false, "message": "duplicate hero id: %s" % id_str}
+			id_set[id_str] = true
 
 	# --- Cross-module referential integrity (legacy → heroes) ---
 	var legacy: Dictionary = (root.get("legacy", {}) as Dictionary)
@@ -553,7 +612,7 @@ func _assemble_root() -> Dictionary:
 	var pp: Dictionary = PlayerProfileIO.pack_current()
 	var cr: Dictionary = CampaignRunIO.pack_current()
 	var sc: Dictionary = SanctumIO.pack_current()
-	var hr: Dictionary = HeroesIO.pack_current()
+	var hr: Dictionary = _heroes_io.pack_current()
 	var rs: Array = RealmsIO.pack_current()
 	var em: Dictionary = EconomyIO.pack_current()
 	# Ensure MVP economy defaults exist
@@ -617,7 +676,7 @@ func _apply_unpack(root: Dictionary) -> void:
 	sc_runtime["emotions"] = emo
 	SanctumIO.unpack(sc_runtime)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: hero_roster")
-	HeroesIO.unpack(root["hero_roster"] as Dictionary)
+	_heroes_io.unpack(root["hero_roster"] as Dictionary)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: realm_states")
 	RealmsIO.unpack(root["realm_states"] as Array)
 	if DEBUG_SAVE: push_warning("[SaveService] unpack: economy")

@@ -20,12 +20,15 @@ const RNCatalogIO = preload("res://core/save/modules/RNCatalogIO.gd")
 
 ## Build a fresh campaign_run block from a seed.
 static func pack_new(campaign_seed: int) -> Dictionary:
+	var seed := campaign_seed
+	if seed == 0:
+		seed = _generate_seed32()
 	return {
 		"mode": MODE_MVP,
 		"cycle_index": 0,
 		"realm_selection": [],
 		"realm_order": [],
-		"rng_book": RNCatalogIO.pack_from_seed(campaign_seed)
+		"rng_book": RNCatalogIO.pack_from_seed(seed)
 	}
 
 ## Export the current runtime campaign state.
@@ -47,6 +50,14 @@ static func unpack(d: Dictionary) -> void:
 	if not res.ok:
 		push_warning("CampaignRunIO.unpack: invalid data: %s" % res.message)
 		return
+
+	# Ensure a non-zero campaign_seed (migration guard for older/blank saves)
+	var rb := d.rng_book as Dictionary
+	var cs_val: int = _to_int(rb.get("campaign_seed", 0))
+	if cs_val == 0:
+		var new_seed := _generate_seed32()
+		# Store as string for consistency with schema tolerance
+		rb["campaign_seed"] = str(new_seed)
 
 	# Determinism: restore rng_book into the RNG catalog.
 	RNCatalogIO.unpack(d.rng_book)
@@ -99,3 +110,27 @@ static func _validate(d: Dictionary) -> Dictionary:
 			return {"ok": false, "message": "rng_book.cursors must map String->Int>=0"}
 
 	return {"ok": true, "message": "OK"}
+
+# -------------------------------------------------------------------
+# Seed helpers (one-time generation for new campaigns / migrations)
+# -------------------------------------------------------------------
+static func _generate_seed32() -> int:
+	# Mix time, device id, and a random sample into a 32-bit-ish int; avoid 0.
+	var material := "%s|%s|%s" % [
+		str(Time.get_unix_time_from_system()),
+		OS.get_unique_id(),
+		str(randf())
+	]
+	var h := int(hash(material))
+	if h == 0:
+		return 1
+	return h
+
+static func _to_int(v: Variant) -> int:
+	var t := typeof(v)
+	if t == TYPE_INT:
+		return int(v)
+	if t == TYPE_STRING:
+		var s := String(v)
+		return int(s)
+	return 0

@@ -24,6 +24,10 @@ var _econ_live_service: Node = null
 const Seedbook = preload("res://core/seed/SeedBook.gd")
 const AseTickService = preload("res://core/economy/AseTickService.gd")
 const EconomyServiceScript = preload("res://core/services/EconomyService.gd")
+const SummonServiceScript = preload("res://core/services/SummonService.gd")
+const EchoConstants = preload("res://core/echoes/EchoConstants.gd")
+const PersonalityArchetype = preload("res://core/echoes/PersonalityArchetype.gd")
+const ArchetypeBarks = preload("res://core/echoes/ArchetypeBarks.gd")
 @onready var _econ_service_inst: Node = EconomyServiceScript.new()
 
 # Optional: attach a label later without hard dependency
@@ -136,6 +140,120 @@ func _register_default_commands() -> void:
 				t.log("seed_info", info)
 		return 0
 
+	# --- Summoning commands ---------------------------------------------------
+	_commands["/summon"] = func(args: Array) -> int:
+		# Usage: /summon [count:int>=1]
+		var n: int = 1
+		if args.size() > 0:
+			var s := String(args[0])
+			if not s.is_valid_int():
+				_print_line("Usage: /summon [count:int>=1]")
+				return 1
+			n = int(s)
+			if n < 1:
+				_print_line("Count must be >= 1")
+				return 1
+		var res: Dictionary = SummonServiceScript.summon(n)
+		if not bool(res.get("ok", false)):
+			var reason := String(res.get("reason", ""))
+			match reason:
+				"insufficient_ase":
+					var have := int(res.get("have", 0))
+					var cost := int(res.get("cost", 0))
+					var need := int(res.get("need", max(0, cost - have)))
+					_print_line("[summon] FAILED — Insufficient Ase (have=%d, need=%d, cost=%d)" % [have, need, cost])
+					return 2
+				"bad_count":
+					_print_line("[summon] FAILED — bad count (must be >= 1)")
+					return 2
+				"debit_failed":
+					_print_line("[summon] FAILED — economy debit failed")
+					return 2
+				_:
+					_print_line("[summon] FAILED — unknown reason")
+					return 2
+		var ids: Array = res.get("ids", [])
+		var cost_ase: int = int(res.get("cost_ase", 0))
+		_print_line("[summon] OK — cost=%d, created=%d" % [cost_ase, ids.size()])
+		if ids.is_empty():
+			_print_line("(warning) No heroes returned; check SaveService.heroes_add()")
+			return 0
+		var ss := get_node("/root/SaveService")
+		for raw_id in ids:
+			var id_i: int = int(raw_id)
+			var h: Dictionary = ss.hero_get(id_i)
+			_print_line("✨ " + _format_hero_summary(h))
+			var bark_arch := String(h.get("archetype", ""))
+			var bark_name := String(h.get("name", ""))
+			var bark_line := ArchetypeBarks.arrival(bark_arch, bark_name)
+			if bark_line != "":
+				_print_line("  " + "“%s”" % bark_line)
+		return 0
+
+	_commands["/list_heroes"] = func(args: Array) -> int:
+		# Usage: /list_heroes [limit:int=10]
+		var limit: int = 10
+		if args.size() > 0:
+			var s := String(args[0])
+			if not s.is_valid_int():
+				_print_line("Usage: /list_heroes [limit:int]")
+				return 1
+			limit = max(1, int(s))
+		var ss := get_node("/root/SaveService")
+		var roster: Array = ss.heroes_list()
+		var total := roster.size()
+		if total == 0:
+			_print_line("[list_heroes] No heroes yet.")
+			return 0
+		var start: int = max(0, total - limit)
+		_print_line("[list_heroes] showing %d of %d" % [total - start, total])
+		for i in range(start, total):
+			var h: Dictionary = roster[i]
+			_print_line(" - " + _format_hero_summary(h))
+		return 0
+
+	_commands["/hero_info"] = func(args: Array) -> int:
+		# Usage: /hero_info <id:int>
+		if args.size() == 0:
+			_print_line("Usage: /hero_info <id:int>")
+			return 1
+		var s := String(args[0])
+		if not s.is_valid_int():
+			_print_line("/hero_info expects an integer id")
+			return 1
+		var id_i: int = int(s)
+		var ss := get_node("/root/SaveService")
+		var h: Dictionary = ss.hero_get(id_i)
+		if typeof(h) != TYPE_DICTIONARY or h.is_empty():
+			_print_line("No hero with id %d" % id_i)
+			return 1
+		var name := String(h.get("name", "?"))
+		var rank := int(h.get("rank", 0))
+		var cls := String(h.get("class", "?"))
+		var gen := String(h.get("gender", "?"))
+		_print_line("Hero %d: %s — r%d, class=%s, gender=%s" % [id_i, name, rank, cls, gen])
+		var arch := String(h.get("archetype", ""))
+		if arch != "":
+			var arch_display := arch
+			if typeof(EchoConstants) == TYPE_OBJECT and EchoConstants.ARCHETYPE_META.has(arch):
+				var meta: Dictionary = EchoConstants.ARCHETYPE_META[arch]
+				arch_display = String(meta.get("display_name", arch))
+			_print_line("  Archetype: %s  [debug: arch=%s]" % [arch_display, arch])
+		else:
+			_print_line("  Archetype: n/a")
+		# Intro Bark (deterministic, display-only)
+		var bark_line := ArchetypeBarks.arrival(arch, name)
+		if bark_line != "":
+			_print_line("  Intro Bark: " + "“%s”" % bark_line)
+		var tr: Dictionary = h.get("traits", {})
+		var c := int(tr.get("courage", 0))
+		var w := int(tr.get("wisdom", 0))
+		var f := int(tr.get("faith", 0))
+		var seed := int(h.get("seed", 0))
+		var created := String(h.get("created_utc", ""))
+		_print_line("  Traits: Courage %d, Wisdom %d, Faith %d  |  Seed: %d  |  Created: %s" % [c, w, f, seed, created])
+		return 0
+
 	# --- Core architecture helpers ---
 	_commands["/new_game"] = func(args: Array) -> int:
 		# Usage: /new_game [seed]
@@ -151,6 +269,19 @@ func _register_default_commands() -> void:
 		SaveService.new_game(parsed_seed)
 		var info = Seedbook.get_all_seed_info()
 		_print_line("[new_game] Campaign Seed => %s" % String(info.get("campaign_seed","")))
+		# Announce the free starter hero granted on New Game
+		if has_node("/root/SaveService"):
+			var ss := get_node("/root/SaveService")
+			if ss and ss.has_method("heroes_list"):
+				var roster: Array = ss.heroes_list()
+				if roster.size() > 0:
+					var h: Dictionary = roster[0]
+					_print_line("[new_game] Starter hero granted: " + _format_hero_summary(h))
+					var bark_arch := String(h.get("archetype", ""))
+					var bark_name := String(h.get("name", ""))
+					var bark_line := ArchetypeBarks.arrival(bark_arch, bark_name)
+					if bark_line != "":
+						_print_line("  " + "“%s”" % bark_line)
 		return 0
 
 	_commands["/save"] = func(_args: Array) -> int:
@@ -238,6 +369,53 @@ func _register_default_commands() -> void:
 				_print_line("%s => EXISTS (%d bytes) last_saved_utc=%s" % [abs_path, int(size), last])
 			else:
 				_print_line("%s => missing" % abs_path)
+		return 0
+
+	# --- Archetype distribution sampler -----------------------------------------
+	_commands["/archetype_sample"] = func(args: Array) -> int:
+		# Usage: /archetype_sample [count:int=1000] [seed]
+		var count: int = 1000
+		if args.size() > 0:
+			var s0 := String(args[0])
+			if s0.is_valid_int():
+				count = max(1, int(s0))
+			elif s0 == "":
+				count = 1000
+			else:
+				_print_line("Usage: /archetype_sample [count:int=1000] [seed]")
+				return 1
+
+		var seed_text := ""
+		var seed_val: Variant = null
+		if args.size() > 1:
+			seed_text = String(args[1])
+			seed_val = _parse_seed(seed_text)
+
+		var rng := RandomNumberGenerator.new()
+		if seed_val != null:
+			rng.seed = int(seed_val)
+			seed_text = "0x%08X" % int(seed_val)
+		else:
+			rng.randomize()
+			var s := int(rng.randi() & 0x7fffffff)
+			seed_text = "0x%08X" % s
+
+		# Tally setup (include all archetypes so zeros show if needed)
+		var tally: Dictionary = {}
+		for a in EchoConstants.ARCHETYPES:
+			tally[a] = 0
+
+		var min_v := int(EchoConstants.TRAIT_ROLL_MIN)
+		var max_v := int(EchoConstants.TRAIT_ROLL_MAX)
+		for _i in count:
+			var c := rng.randi_range(min_v, max_v)
+			var w := rng.randi_range(min_v, max_v)
+			var f := rng.randi_range(min_v, max_v)
+			var arch := PersonalityArchetype.pick_archetype(c, w, f)
+			tally[arch] = int(tally[arch]) + 1
+
+		_print_line("[archetype_sample] n=%d seed=%s" % [count, seed_text])
+		_print_pct_bars(tally, count)
 		return 0
 
 	# --- Economy quick commands ---
@@ -698,7 +876,50 @@ func _register_default_commands() -> void:
 				return 1
 
 
+
 # --- Private helpers ---
+
+func _pad_right(s: String, width: int) -> String:
+	var pad := width - s.length()
+	return s + (" ".repeat(max(0, pad)))
+
+func _print_pct_bars(tally: Dictionary, total: int) -> void:
+	if total <= 0:
+		_print_line("(no samples)")
+		return
+	# Build percentage table and find max for scaling
+	var percs: Array = []
+	for k in tally.keys():
+		var n := int(tally[k])
+		var pct := (float(n) / float(total)) * 100.0
+		percs.append({"k": String(k), "n": n, "pct": pct})
+	percs.sort_custom(func(a, b): return a["pct"] > b["pct"])  # desc by pct
+	var max_pct := 0.0001
+	for row in percs:
+		max_pct = max(max_pct, float(row["pct"]))
+	var bar_w := 10  # scale bars to 10 blocks
+	for row in percs:
+		var k := String(row["k"]) 
+		var pct_f := float(row["pct"]) 
+		var blocks := int(round((pct_f / max_pct) * float(bar_w)))
+		if pct_f > 0.0 and blocks == 0:
+			blocks = 1
+		var bar := "█".repeat(blocks)
+		var name := _pad_right(k, 11)
+		_print_line("%s  %5.1f%%  %s" % [name, pct_f, bar])
+
+func _format_hero_summary(h: Dictionary) -> String:
+	var id_i := int(h.get("id", -1))
+	var name := String(h.get("name", "?"))
+	var rank := int(h.get("rank", 0))
+	var cls := String(h.get("class", "?"))
+	var gen := String(h.get("gender", "?"))
+	var tr: Dictionary = h.get("traits", {})
+	var c := int(tr.get("courage", 0))
+	var w := int(tr.get("wisdom", 0))
+	var f := int(tr.get("faith", 0))
+	var arch := String(h.get("archetype", "n/a"))
+	return "%s  [id=%d, r%d, class=%s, arch=%s, gender=%s] — (Courage %d / Wisdom %d / Faith %d)" % [name, id_i, rank, cls, arch, gen, c, w, f]
 
 func _find_ase_service() -> Node:
 	var scene := get_tree().current_scene

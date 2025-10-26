@@ -5,7 +5,8 @@ class_name HeroesIO
 ## Purpose: own the heroes roster block for SaveService, assign IDs, and provide a tiny API.
 ## Design:
 ##  • Instance-based state (_active, _recovering, _retired, _fallen, _next_id).
-##  • MVP-minimal hero schema at birth (name, rank, class, traits{courage,wisdom,faith}, seed, created_utc).
+##  • MVP hero schema at birth now includes personality: (name, rank, class, traits{courage,wisdom,faith}, archetype, seed, created_utc).
+##    Archetype is stored at creation (EchoFactory) and is tolerant in validation for backward-compat.
 ##  • Validation accepts BOTH MVP-minimal and future rich schemas (stats, 6-traits, etc.).
 ##  • IDs are assigned here (monotonic int starting at 1).
 ##  • Active list is the working roster for MVP (recovering/retired/fallen reserved for later).
@@ -126,6 +127,11 @@ func _validate_hero(h: Variant) -> Dictionary:
 		return {"ok": false, "message": "hero must be object"}
 	var hd := h as Dictionary
 
+	# Personality note (MVP):
+	#  • Heroes are assigned an archetype string at birth (see EchoFactory) and it is persisted in saves.
+	#  • Validation remains permissive: archetype is not required for older saves, but if present it should be a String.
+	#  • Future tightening can assert membership in EchoConstants.ARCHETYPES.
+
 	# --- MVP minimal requirements ---
 	# name:String, rank:int, class:String, traits:{courage,wisdom,faith:int}, seed:int (optional), created_utc:String (optional)
 	var has_name := typeof(hd.get("name", null)) == TYPE_STRING and String(hd.name) != ""
@@ -164,10 +170,12 @@ func _validate_hero(h: Variant) -> Dictionary:
 # -------------------------------------------------------------
 # Utilities
 # -------------------------------------------------------------
-func _clone_array(src: Array) -> Array:
-	var out: Array = []
+# Deep-copy an array of hero dictionaries as a typed Array[Dictionary]
+func _clone_array(src: Array) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
 	for it in src:
-		out.append(it.duplicate(true) if typeof(it) == TYPE_DICTIONARY else it)
+		if typeof(it) == TYPE_DICTIONARY:
+			out.append((it as Dictionary).duplicate(true))
 	return out
 
 func _sanitize_list(src: Array) -> Array[Dictionary]:
