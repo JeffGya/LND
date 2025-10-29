@@ -22,6 +22,7 @@ var _econ_live_count: int = 0
 var _staged_party: Array[int] = []
 var _last_fight: Dictionary = {}  # { seed:int, rounds:int, party_ids:Array[int>, enemy_count:int }
 var _econ_live_service: Node = null
+var _current_eng: Object = null  # holds the most recent CombatEngine instance for QA hooks
 
 # Shared preloads
 const Seedbook = preload("res://core/seed/SeedBook.gd")
@@ -691,10 +692,10 @@ func _register_default_commands() -> void:
 		ase.set_tick_seconds(tick_seconds)
 
 		var sum_ref := [0.0]
-		ase.ase_generated.connect(func(amount: float, _total_after: float, tick_index: int) -> void:
+		var _on_ase_tick := func(amount: float, _total_after: float, tick_index: int) -> void:
 			sum_ref[0] += amount
 			_print_line("[test_economy] tick %d +%.5f (acc=%.5f)" % [tick_index, amount, sum_ref[0]])
-		)
+		ase.ase_generated.connect(_on_ase_tick)
 
 		# Act — run N manual ticks
 		for i in range(ticks):
@@ -883,7 +884,7 @@ func _register_default_commands() -> void:
 				return 1
 
 	# --- Combat: party & fights (Subtask 9) -----------------------------------
-	_commands["/party_list"] = func(_args: Array) -> int:
+	var _cmd_party_list := func(_args: Array) -> int:
 		var ss_dict: Dictionary = _read_save_snapshot()
 		var avail: Array[Dictionary] = PartyRoster.list_available_allies(ss_dict)
 		if avail.is_empty():
@@ -895,8 +896,9 @@ func _register_default_commands() -> void:
 			var id_i: int = int(hh.get("id", -1))
 			_print_line(" - " + _format_hero_summary(hh) + " [id=%d]" % id_i)
 		return 0
+	_commands["/party_list"] = _cmd_party_list
 
-	_commands["/party_set"] = func(args: Array) -> int:
+	var _cmd_party_set := func(_args: Array) -> int:
 		# Usage: /party_set <ids...>
 		if args.is_empty():
 			_print_line("Usage: /party_set <ids...>")
@@ -924,6 +926,7 @@ func _register_default_commands() -> void:
 		_staged_party = ids_norm
 		_print_line("[party_set] Party set: %s" % str(ids_norm))
 		return 0
+	_commands["/party_set"] = _cmd_party_set
 
 	_commands["/party_show"] = func(_args: Array) -> int:
 		if _staged_party.is_empty():
@@ -987,6 +990,7 @@ func _register_default_commands() -> void:
 		# Enemies and engine
 		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(3, int(seed_val))
 		var eng := CombatEngine.new()
+		_current_eng = eng
 		eng.start_battle(int(seed_val), party_ids, enemies, "defeat", rounds)
 		var log := CombatLog.new(16)
 		_print_line("[fight_demo] party=%s seed=%d rounds=%d" % [str(party_ids), int(seed_val), rounds])
@@ -1012,6 +1016,7 @@ func _register_default_commands() -> void:
 		var enemy_count: int = int(_last_fight.get("enemy_count", 3))
 		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(enemy_count, seed_v)
 		var eng := CombatEngine.new()
+		_current_eng = eng
 		eng.start_battle(seed_v, party_ids, enemies, "defeat", rounds)
 		var log := CombatLog.new(16)
 		_print_line("[fight_again] party=%s seed=%d rounds=%d" % [str(party_ids), seed_v, rounds])
@@ -1019,6 +1024,109 @@ func _register_default_commands() -> void:
 			var snap: Dictionary = eng.step_round()
 			log.print_round(snap)
 		_print_line("[fight_again] result: %s" % str(eng.result()))
+		return 0
+
+	# --- Combat morale QA hooks -----------------------------------------------
+
+	# Helper: build label & multiplier from a raw morale value (0..100)
+	func _morale_label_and_mult(morale_val: int) -> Dictionary:
+		var m := clampi(int(morale_val), 0, 100)
+		var tier := CombatConstants.morale_tier(m)
+		var label := "BROKEN"
+		match tier:
+			CombatConstants.MoraleTier.INSPIRED:
+				label = "INSPIRED"
+			CombatConstants.MoraleTier.STEADY:
+				label = "STEADY"
+			CombatConstants.MoraleTier.SHAKEN:
+				label = "SHAKEN"
+			_:
+				label = "BROKEN"
+		var mult := float(CombatConstants.morale_multiplier(tier))
+		return {"morale": m, "tier": tier, "label": label, "mult": mult}
+
+	_commands["/morale_show"] = func(_args: Array) -> int:
+		if _current_eng == null:
+			_print_line("[morale_show] no active demo engine. Run /fight_demo or /fight_again first.")
+			return 1
+		var st_v: Variant = _current_eng.get("_state")
+		if typeof(st_v) != TYPE_DICTIONARY:
+			_print_line("[morale_show] engine state unavailable")
+			return 1
+		var st := st_v as Dictionary
+		var allies: Array = st.get("allies", [])
+		if allies.is_empty():
+			_print_line("[morale_show] no allies present in current engine state")
+			return 0
+		_print_line("[morale_show] allies=%d" % allies.size())
+		for a in allies:
+			if typeof(a) != TYPE_DICTIONARY:
+				continue
+			var id_i: int = int((a as Dictionary).get("id", -1))
+			var name_s: String = String((a as Dictionary).get("name", str(id_i)))
+			# Read morale like the engine accessor: stats.morale -> morale -> default 50
+			var stats: Dictionary = (a as Dictionary).get("stats", {})
+			var m := 50
+			if typeof(stats) == TYPE_DICTIONARY and stats.has("morale"):
+				m = int(stats.get("morale", 50))
+			elif (a as Dictionary).has("morale"):
+				m = int((a as Dictionary).get("morale", 50))
+			var info := _morale_label_and_mult(m)
+			_print_line(" - id=%d  name=%s  morale=%d  tier=%s  mult=%.2f" % [id_i, name_s, int(info["morale"]), String(info["label"]), float(info["mult"])])
+		return 0
+
+	_commands["/morale_set"] = func(args: Array) -> int:
+		# Usage: /morale_set <ally_id:int> <0..100>
+		if args.size() < 2:
+			_print_line("Usage: /morale_set <ally_id:int> <0..100>")
+			return 1
+		var s_id := String(args[0])
+		var s_val := String(args[1])
+		if not s_id.is_valid_int() or (not s_val.is_valid_int() and not s_val.is_valid_float()):
+			_print_line("Usage: /morale_set <ally_id:int> <0..100>")
+			return 1
+		var id_i := int(s_id)
+		var val := int(float(s_val))
+		var clamped := clampi(val, 0, 100)
+		if _current_eng == null:
+			_print_line("[morale_set] no active demo engine. Run /fight_demo or /fight_again first.")
+			return 1
+		var st_v2: Variant = _current_eng.get("_state")
+		if typeof(st_v2) != TYPE_DICTIONARY:
+			_print_line("[morale_set] engine state unavailable")
+			return 1
+		var st2 := st_v2 as Dictionary
+		var allies2: Array = st2.get("allies", [])
+		var enemies2: Array = st2.get("enemies", [])
+		# Guard: enemies do not use morale in MVP
+		for e in enemies2:
+			if typeof(e) == TYPE_DICTIONARY and int((e as Dictionary).get("id", -1)) == id_i:
+				_print_line("[morale_set] enemies do not use morale in MVP; no change made.")
+				return 2
+		var found: bool = false
+		for i in range(allies2.size()):
+			var ent: Dictionary = allies2[i] as Dictionary
+			if typeof(ent) != TYPE_DICTIONARY:
+				continue
+			if int((ent as Dictionary).get("id", -1)) != id_i:
+				continue
+			found = true
+			var name_s2: String = String((ent as Dictionary).get("name", str(id_i)))
+			var stats2: Dictionary = (ent as Dictionary).get("stats", {})
+			if typeof(stats2) != TYPE_DICTIONARY:
+				stats2 = {}
+			# Write to the canonical place first
+			stats2["morale"] = clamped
+			(ent as Dictionary)["stats"] = stats2
+			# Mirror onto root dictionary as a fallback read for any legacy paths
+			(ent as Dictionary)["morale"] = clamped
+			# Build tier label & multiplier for confirmation
+			var info2 := _morale_label_and_mult(clamped)
+			_print_line("[morale_set] id=%d name=%s morale=%d tier=%s mult=%.2f" % [id_i, name_s2, int(info2["morale"]), String(info2["label"]), float(info2["mult"])])
+			break
+		if not found:
+			_print_line("[morale_set] no ally with id=%d in current engine state" % id_i)
+			return 1
 		return 0
 
 
@@ -1039,7 +1147,8 @@ func _print_pct_bars(tally: Dictionary, total: int) -> void:
 		var n := int(tally[k])
 		var pct := (float(n) / float(total)) * 100.0
 		percs.append({"k": String(k), "n": n, "pct": pct})
-	percs.sort_custom(func(a, b): return a["pct"] > b["pct"])  # desc by pct
+	var _cmp_pct_desc := func(a, b) -> bool: return a["pct"] > b["pct"]
+	percs.sort_custom(_cmp_pct_desc)  # desc by pct
 	var max_pct := 0.0001
 	for row in percs:
 		max_pct = max(max_pct, float(row["pct"]))
