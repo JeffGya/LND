@@ -34,28 +34,39 @@ const MORALE_DECAY_EVERY_N_ROUNDS: int = 2
 const MORALE_DECAY_AMOUNT: int = 1
 
 # Baseline damage math (class math will arrive later; keep MVP simple/legible).
+
 const BASE_ATTACK_MULT: float = 1.0
 const DAMAGE_FLOOR: int = 0
 
-# Broken behavior: by default, Broken units are *eligible* to refuse entirely.
-# The AI chooser will typically translate BROKEN into REFUSE; if they still act
-# (e.g., scripted or special), we also expose a conservative damage multiplier.
+# Optional smoothing (MVP: disabled)
+# If enabled, ActionResolver will accumulate fractional damage remainders per attacker
+# so that, over many hits, average damage matches the morale multiplier exactly.
+# Deterministic and per-battle only (no persistence).
+const USE_FRACTIONAL_BUCKET: bool = false
+# When true, only accumulate buckets when multiplier > 1.0 (i.e., Inspired).
+# This keeps SHAKEN simple/visible for MVP. Set to false to accumulate for any multiplier.
+const BUCKET_ONLY_FOR_BOOSTS: bool = true
+
+# Broken behavior (MVP): Broken units should REFUSE their major action.
+# The resolver/AI enforces REFUSE; if an attack still slips through (scripted),
+# use the safety multiplier from MORALE_MULTIPLIERS (currently -10%).
 const BROKEN_REFUSE_DEFAULT: bool = true
 
 # --- Morale bands & multipliers ----------------------------------------------
 # Thresholds for mapping raw morale (0..100) into tiers.
-const INSPIRED_MIN: int = 75
-const STEADY_MIN: int = 40
-const SHAKEN_MIN: int = 15
+const INSPIRED_MIN: int = 80
+const STEADY_MIN: int = 50
+const SHAKEN_MIN: int = 30
 # Anything below SHAKEN_MIN is BROKEN.
 
 # Effectiveness multipliers per tier (used in damage and possibly support).
-# INSPIRED: +20%; STEADY: +0%; SHAKEN: -20%; BROKEN: -40% (if they act at all).
+# MVP canon: INSPIRED +10%; STEADY 0%; SHAKEN -10%.
+# BROKEN: REFUSE major action in MVP; if an attack still occurs, treat as -10% for safety.
 const MORALE_MULTIPLIERS := {
-	MoraleTier.INSPIRED: 1.20,
+	MoraleTier.INSPIRED: 1.10,
 	MoraleTier.STEADY: 1.00,
-	MoraleTier.SHAKEN: 0.80,
-	MoraleTier.BROKEN: 0.60,
+	MoraleTier.SHAKEN: 0.90,
+	MoraleTier.BROKEN: 0.90, # Safety: resolver will typically REFUSE on BROKEN in MVP
 }
 
 # --- Helpers (pure) -----------------------------------------------------------

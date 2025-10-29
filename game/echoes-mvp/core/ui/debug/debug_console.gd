@@ -23,6 +23,7 @@ var _staged_party: Array[int] = []
 var _last_fight: Dictionary = {}  # { seed:int, rounds:int, party_ids:Array[int>, enemy_count:int }
 var _econ_live_service: Node = null
 var _current_eng: Object = null  # holds the most recent CombatEngine instance for QA hooks
+var _morale_overrides_persist: Dictionary = {}  # persists morale overrides across demo engines
 
 # Shared preloads
 const Seedbook = preload("res://core/seed/SeedBook.gd")
@@ -36,6 +37,12 @@ const PartyRoster = preload("res://core/combat/PartyRoster.gd")
 const EnemyFactory = preload("res://core/combat/EnemyFactory.gd")
 const CombatEngine = preload("res://core/combat/CombatEngine.gd")
 const CombatLog = preload("res://core/combat/CombatLog.gd")
+const CmdCore = preload("res://core/ui/debug/commands/cmd_core.gd")
+const CmdHeroes = preload("res://core/ui/debug/commands/cmd_heroes.gd")
+const CmdSave = preload("res://core/ui/debug/commands/cmd_save.gd")
+const CmdEconomy = preload("res://core/ui/debug/commands/cmd_economy.gd")
+const CmdTelemetry = preload("res://core/ui/debug/commands/cmd_telemetry.gd")
+const CmdCombat = preload("res://core/ui/debug/commands/cmd_combat.gd")
 @onready var _econ_service_inst: Node = EconomyServiceScript.new()
 
 # Optional: attach a label later without hard dependency
@@ -114,6 +121,13 @@ func _print_line(s: String) -> void:
 		_output_label.set("text", s)
 
 func _register_default_commands() -> void:
+	# Module-registered commands (pure delegation; in-file handlers below will override if duplicated)
+	CmdCore.register(self, _commands)
+	CmdHeroes.register(self, _commands)
+	CmdSave.register(self, _commands)
+	CmdEconomy.register(self, _commands)
+	CmdTelemetry.register(self, _commands)
+	CmdCombat.register(self, _commands)
 	_commands["/help"] = func(_args: Array) -> int:
 		_print_line("Commands:")
 		for k in _commands.keys():
@@ -898,7 +912,7 @@ func _register_default_commands() -> void:
 		return 0
 	_commands["/party_list"] = _cmd_party_list
 
-	var _cmd_party_set := func(_args: Array) -> int:
+	var _cmd_party_set := func(args: Array) -> int:
 		# Usage: /party_set <ids...>
 		if args.is_empty():
 			_print_line("Usage: /party_set <ids...>")
@@ -991,6 +1005,12 @@ func _register_default_commands() -> void:
 		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(3, int(seed_val))
 		var eng := CombatEngine.new()
 		_current_eng = eng
+		# Apply persisted morale overrides before starting the battle so they're seeded into state
+		for k in _morale_overrides_persist.keys():
+			var id_i := int(k)
+			var v_i := int(_morale_overrides_persist[k])
+			if eng.has_method("morale_override_set"):
+				eng.morale_override_set(id_i, v_i)
 		eng.start_battle(int(seed_val), party_ids, enemies, "defeat", rounds)
 		var log := CombatLog.new(16)
 		_print_line("[fight_demo] party=%s seed=%d rounds=%d" % [str(party_ids), int(seed_val), rounds])
@@ -1017,6 +1037,12 @@ func _register_default_commands() -> void:
 		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(enemy_count, seed_v)
 		var eng := CombatEngine.new()
 		_current_eng = eng
+		# Apply persisted morale overrides before starting the battle so they're seeded into state
+		for k in _morale_overrides_persist.keys():
+			var id_i := int(k)
+			var v_i := int(_morale_overrides_persist[k])
+			if eng.has_method("morale_override_set"):
+				eng.morale_override_set(id_i, v_i)
 		eng.start_battle(seed_v, party_ids, enemies, "defeat", rounds)
 		var log := CombatLog.new(16)
 		_print_line("[fight_again] party=%s seed=%d rounds=%d" % [str(party_ids), seed_v, rounds])
@@ -1028,24 +1054,7 @@ func _register_default_commands() -> void:
 
 	# --- Combat morale QA hooks -----------------------------------------------
 
-	# Helper: build label & multiplier from a raw morale value (0..100)
-	func _morale_label_and_mult(morale_val: int) -> Dictionary:
-		var m := clampi(int(morale_val), 0, 100)
-		var tier := CombatConstants.morale_tier(m)
-		var label := "BROKEN"
-		match tier:
-			CombatConstants.MoraleTier.INSPIRED:
-				label = "INSPIRED"
-			CombatConstants.MoraleTier.STEADY:
-				label = "STEADY"
-			CombatConstants.MoraleTier.SHAKEN:
-				label = "SHAKEN"
-			_:
-				label = "BROKEN"
-		var mult := float(CombatConstants.morale_multiplier(tier))
-		return {"morale": m, "tier": tier, "label": label, "mult": mult}
-
-	_commands["/morale_show"] = func(_args: Array) -> int:
+	var __morale_show := func(_args: Array) -> int:
 		if _current_eng == null:
 			_print_line("[morale_show] no active demo engine. Run /fight_demo or /fight_again first.")
 			return 1
@@ -1074,8 +1083,9 @@ func _register_default_commands() -> void:
 			var info := _morale_label_and_mult(m)
 			_print_line(" - id=%d  name=%s  morale=%d  tier=%s  mult=%.2f" % [id_i, name_s, int(info["morale"]), String(info["label"]), float(info["mult"])])
 		return 0
+	_commands["/morale_show"] = __morale_show
 
-	_commands["/morale_set"] = func(args: Array) -> int:
+	var __morale_set := func(args: Array) -> int:
 		# Usage: /morale_set <ally_id:int> <0..100>
 		if args.size() < 2:
 			_print_line("Usage: /morale_set <ally_id:int> <0..100>")
@@ -1088,50 +1098,144 @@ func _register_default_commands() -> void:
 		var id_i := int(s_id)
 		var val := int(float(s_val))
 		var clamped := clampi(val, 0, 100)
+		# Persist for future demo engines
+		_morale_overrides_persist[id_i] = clamped
+		# Apply to current engine instance if present
+		if _current_eng != null and _current_eng.has_method("morale_override_set"):
+			_current_eng.morale_override_set(id_i, clamped)
+			# Also confirm by reading back if possible
+			if _current_eng.has_method("get_actor_morale_tier"):
+				var tier: int = int(_current_eng.get_actor_morale_tier(id_i))
+				var mult := CombatConstants.morale_multiplier_for_tier(tier)
+				var label := "BROKEN"
+				match tier:
+					CombatConstants.MoraleTier.INSPIRED: label = "INSPIRED"
+					CombatConstants.MoraleTier.STEADY:   label = "STEADY"
+					CombatConstants.MoraleTier.SHAKEN:   label = "SHAKEN"
+					_:                                 label = "BROKEN"
+				_print_line("[morale_set] id=%d morale=%d tier=%s mult=%.2f (persisted)" % [id_i, clamped, label, float(mult)])
+				return 0
+		# Fallback: try to write directly into current engine state (legacy path)
 		if _current_eng == null:
-			_print_line("[morale_set] no active demo engine. Run /fight_demo or /fight_again first.")
-			return 1
+			_print_line("[morale_set] persisted for next fight; no active engine.")
+			return 0
 		var st_v2: Variant = _current_eng.get("_state")
 		if typeof(st_v2) != TYPE_DICTIONARY:
-			_print_line("[morale_set] engine state unavailable")
-			return 1
+			_print_line("[morale_set] engine state unavailable; persisted only.")
+			return 0
 		var st2 := st_v2 as Dictionary
 		var allies2: Array = st2.get("allies", [])
-		var enemies2: Array = st2.get("enemies", [])
-		# Guard: enemies do not use morale in MVP
-		for e in enemies2:
-			if typeof(e) == TYPE_DICTIONARY and int((e as Dictionary).get("id", -1)) == id_i:
-				_print_line("[morale_set] enemies do not use morale in MVP; no change made.")
-				return 2
 		var found: bool = false
 		for i in range(allies2.size()):
 			var ent: Dictionary = allies2[i] as Dictionary
 			if typeof(ent) != TYPE_DICTIONARY:
 				continue
-			if int((ent as Dictionary).get("id", -1)) != id_i:
+			if int(ent.get("id", -1)) != id_i:
 				continue
 			found = true
-			var name_s2: String = String((ent as Dictionary).get("name", str(id_i)))
-			var stats2: Dictionary = (ent as Dictionary).get("stats", {})
+			var stats2: Dictionary = ent.get("stats", {})
 			if typeof(stats2) != TYPE_DICTIONARY:
 				stats2 = {}
-			# Write to the canonical place first
 			stats2["morale"] = clamped
-			(ent as Dictionary)["stats"] = stats2
-			# Mirror onto root dictionary as a fallback read for any legacy paths
-			(ent as Dictionary)["morale"] = clamped
-			# Build tier label & multiplier for confirmation
+			ent["stats"] = stats2
+			ent["morale"] = clamped
 			var info2 := _morale_label_and_mult(clamped)
-			_print_line("[morale_set] id=%d name=%s morale=%d tier=%s mult=%.2f" % [id_i, name_s2, int(info2["morale"]), String(info2["label"]), float(info2["mult"])])
+			_print_line("[morale_set] id=%d morale=%d tier=%s mult=%.2f (state-updated)" % [id_i, int(info2["morale"]), String(info2["label"]), float(info2["mult"])])
 			break
 		if not found:
-			_print_line("[morale_set] no ally with id=%d in current engine state" % id_i)
-			return 1
+			_print_line("[morale_set] no ally with id=%d in current engine state (persisted for next fight)" % id_i)
 		return 0
+	_commands["/morale_set"] = __morale_set
 
+	# List/clear persisted morale overrides
+	var __morale_overrides := func(_args: Array) -> int:
+		if _morale_overrides_persist.is_empty():
+			_print_line("[morale_overrides] (none)")
+			return 0
+		_print_line("[morale_overrides] %d entries:" % _morale_overrides_persist.size())
+		for k in _morale_overrides_persist.keys():
+			_print_line(" - id=%d => %d" % [int(k), int(_morale_overrides_persist[k])])
+		return 0
+	_commands["/morale_overrides"] = __morale_overrides
 
+	var __morale_clear := func(args: Array) -> int:
+		# Usage: /morale_clear [id]
+		if args.size() > 0 and String(args[0]).is_valid_int():
+			var id_i := int(String(args[0]))
+			_morale_overrides_persist.erase(id_i)
+			if _current_eng != null and _current_eng.has_method("morale_override_clear"):
+				_current_eng.morale_override_clear(id_i)
+			_print_line("[morale_clear] cleared id=%d" % id_i)
+			return 0
+		# Clear all
+		_morale_overrides_persist.clear()
+		if _current_eng != null and _current_eng.has_method("morale_override_clear"):
+			_current_eng.morale_override_clear(-1)
+		_print_line("[morale_clear] cleared all overrides")
+		return 0
+	_commands["/morale_clear"] = __morale_clear
+
+	# --- Combat temp boost QA ---------------------------------------------------
+	var __atk_boost := func(args: Array) -> int:
+		# Usage: /atk_boost <id:int> <delta:int>
+		if args.size() < 2:
+			_print_line("Usage: /atk_boost <id:int> <delta:int>")
+			return 1
+		var s_id := String(args[0])
+		var s_delta := String(args[1])
+		if not s_id.is_valid_int() or not s_delta.is_valid_int():
+			_print_line("Usage: /atk_boost <id:int> <delta:int>")
+			return 1
+		if _current_eng == null:
+			_print_line("[atk_boost] no active demo engine. Run /fight_demo or /fight_again first.")
+			return 1
+		var id_i := int(s_id)
+		var delta := int(s_delta)
+		if not _current_eng.has_method("set_temp_atk_boost") or not _current_eng.has_method("get_temp_atk_boost"):
+			_print_line("[atk_boost] engine does not expose temp boost helpers")
+			return 2
+		_current_eng.set_temp_atk_boost(id_i, delta)
+		var now := int(_current_eng.get_temp_atk_boost(id_i))
+		_print_line("[atk_boost] id=%d +%d (now=%+d)" % [id_i, delta, now])
+		return 0
+	_commands["/atk_boost"] = __atk_boost
+
+	var __boost_clear := func(args: Array) -> int:
+		# Usage: /boost_clear [id:int]
+		if _current_eng == null:
+			_print_line("[boost_clear] no active demo engine. Run /fight_demo or /fight_again first.")
+			return 1
+		if args.size() > 0 and String(args[0]).is_valid_int():
+			var id_i := int(String(args[0]))
+			if _current_eng.has_method("clear_temp_boosts"):
+				_current_eng.clear_temp_boosts(id_i)
+				_print_line("[boost_clear] cleared boosts for id=%d" % id_i)
+				return 0
+		if _current_eng.has_method("clear_temp_boosts"):
+			_current_eng.clear_temp_boosts(-1)
+			_print_line("[boost_clear] cleared all boosts")
+			return 0
+		_print_line("[boost_clear] engine does not expose clear_temp_boosts")
+		return 2
+	_commands["/boost_clear"] = __boost_clear
 
 # --- Private helpers ---
+
+func _morale_label_and_mult(morale_val: int) -> Dictionary:
+	var m := clampi(int(morale_val), 0, 100)
+	var tier := CombatConstants.morale_tier(m)
+	var label := "BROKEN"
+	match tier:
+		CombatConstants.MoraleTier.INSPIRED:
+			label = "INSPIRED"
+		CombatConstants.MoraleTier.STEADY:
+			label = "STEADY"
+		CombatConstants.MoraleTier.SHAKEN:
+			label = "SHAKEN"
+		_:
+			label = "BROKEN"
+	var mult := float(CombatConstants.morale_multiplier_for_tier(tier))
+	return {"morale": m, "tier": tier, "label": label, "mult": mult}
 
 func _pad_right(s: String, width: int) -> String:
 	var pad := width - s.length()

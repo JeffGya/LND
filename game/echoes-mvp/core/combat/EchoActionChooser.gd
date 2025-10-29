@@ -20,7 +20,9 @@ static func choose_action(hero: Dictionary, ctx: Dictionary) -> Dictionary:
 		return _refuse(actor_id, "invalid_actor")
 
 	# --- 1) REFUSAL GATE -------------------------------------------------------
-	var morale: int = _get_int(hero, ["stats", "morale"], 50)
+	# Early BROKEN gate (convenience): chooser refuses before resolver.
+	# Resolver remains authoritative and will also refuse if anything slips through.
+	var morale: int = _get_morale_local(hero)
 	var tier: int = CombatConstants.morale_tier(morale)
 	if tier == CombatConstants.MoraleTier.BROKEN:
 		return _refuse(actor_id, "broken")
@@ -72,6 +74,7 @@ static func choose_action(hero: Dictionary, ctx: Dictionary) -> Dictionary:
 
 # Internal helpers ------------------------------------------------------------
 
+## Build a standardized REFUSE action; used by BROKEN and fear gates (deterministic, no RNG).
 static func _refuse(actor_id: int, reason: String) -> Dictionary:
 	return {
 		"type": CombatConstants.ActionType.REFUSE,
@@ -92,6 +95,17 @@ static func _get_int(src: Dictionary, path: Array, default_val: int) -> int:
 		return int(float(cur))
 	else:
 		return default_val
+
+## Local morale read (stats.morale → morale → default 50). Mirrors engine accessor semantics.
+static func _get_morale_local(src: Dictionary) -> int:
+	if src.has("stats") and typeof(src["stats"]) == TYPE_DICTIONARY:
+		var stats: Dictionary = src["stats"]
+		if stats.has("morale"):
+			return int(stats.get("morale", 50))
+	# Fallbacks
+	if src.has("morale"):
+		return int(src.get("morale", 50))
+	return 50
 
 ## Builds a lightweight ally descriptor with hp ratio for triage selection.
 static func _pick_lowest_hp_ratio_ally(allies: Array[Dictionary]) -> Dictionary:

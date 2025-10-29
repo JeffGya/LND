@@ -78,6 +78,43 @@ Each combatant gets:
 
 ---
 
+## 5.1 Morale System Implementation (MVP Final)
+
+**Canon Link:** §9 Combat, AI & Simulation → “Morale & Fear System”  
+**Implements:** “As the Keeper I want morale to affect output”
+
+During combat, each ally operates with a morale value (0–100) that affects their attack output.  
+Enemies currently ignore morale in MVP.
+
+| Tier | Range | Multiplier | Behavior |
+|:--|:--:|:--:|:--|
+| INSPIRED | 80–100 | × 1.10 | Attacks deal +10 % damage |
+| STEADY | 50–79 | × 1.00 | Baseline output |
+| SHAKEN | 30–49 | × 0.90 | Attacks deal −10 % damage |
+| BROKEN | 0–29 | — | Refuses major actions (enters REFUSE state) |
+
+**Files touched**
+- `core/combat/CombatConstants.gd` – Canonical thresholds & multipliers  
+- `core/combat/CombatEngine.gd` – Morale accessor and snapshot fields  
+- `core/combat/ActionResolver.gd` – Applies multiplier (+ BROKEN → REFUSE)  
+- `core/combat/CombatLog.gd` – Displays morale tags (+10 % / −10 %)  
+- `core/ui/debug/debug_console.gd` – QA commands `/morale_show`, `/morale_set`
+
+**Testing Tools**
+| Command | Purpose |
+|:--|:--|
+| `/morale_show` | Lists current ally morale and tier in combat |
+| `/morale_set <id> <0..100>` | Manually adjusts ally morale for QA |
+| `/fight_again` | Replays last battle to verify morale effects |
+
+**Design Notes**
+- Morale is combat‑state only in MVP. It resets to 50 each battle.  
+- Post‑battle persistence (“carry‑over morale”) is planned for post‑MVP.  
+- Deterministic: no RNG involved; same seed ⇒ same results.  
+- Broken enforcement is authoritative in resolver, not chooser.
+
+---
+
 ## 6. Determinism Guarantees
 
 ✅ Identical seed ⇒ identical battle order, choices, and outcomes.  

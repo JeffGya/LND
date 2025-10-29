@@ -133,7 +133,29 @@ static func _format_action(a: Dictionary) -> String:
 				var hp_after: int = int(a.get("target_hp_after", 0))
 				var hp_max: int = int(a.get("target_max_hp", 0))
 				hp_tag = "  [%d/%d]" % [hp_after, hp_max]
-			return "ATTACK %s → %s  dmg=%d%s%s%s" % [actor_label, target_label, dmg, extra, ko_tag, hp_tag]
+			# Morale suffix (visible only when multiplier deviates from 1.0).
+			var morale_tag: String = ""
+			var m_mult: float = float(a.get("morale_mult", 1.0))
+			if abs(m_mult - 1.0) > 0.0001:
+				var tier_val: Variant = a.get("morale_tier", null)
+				var tier_s: String = String(tier_val) if tier_val != null else ("INSPIRED" if m_mult > 1.0 else "SHAKEN")
+				var sign_str: String = "+" if m_mult > 1.0 else "-"
+				var mult_str: String = "%.2f" % m_mult
+				morale_tag = "  [%s%s x%s]" % [sign_str, tier_s, mult_str]
+			# Guard mitigation suffix (only when guard actually reduced damage)
+			var guard_tag: String = ""
+			if a.has("guard_reduced_by"):
+				var gr: int = int(a.get("guard_reduced_by", 0))
+				if gr > 0:
+					guard_tag = "  [guard-%d]" % gr
+			# ATK boost suffix (for QA visibility)
+			var atk_tag: String = ""
+			if a.has("atk_boost"):
+				var atk_val: int = int(a.get("atk_boost", 0))
+				if atk_val != 0:
+					var sign_str: String = "+" if atk_val > 0 else ""
+					atk_tag = "  [+ATK %s%d]" % [sign_str, atk_val]
+			return "ATTACK %s → %s  dmg=%d%s%s%s%s%s%s" % [actor_label, target_label, dmg, extra, ko_tag, hp_tag, guard_tag, morale_tag, atk_tag]
 		CombatConstants.ActionType.GUARD:
 			var target_g: int = int(a.get("target_id", -1))
 			var target_label_g: String = str(a.get("target_name", str(target_g)))
