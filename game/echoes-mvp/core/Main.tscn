@@ -19,3 +19,4 @@ text = "Ase: initializing…"
 [node name="DebugConsole" type="Node" parent="."]
 script = ExtResource("3")
 output_label_path = NodePath("AseStatusLabel")
+input_field_path = null
