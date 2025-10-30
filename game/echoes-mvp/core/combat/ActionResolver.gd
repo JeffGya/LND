@@ -66,8 +66,9 @@ static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 	var hp: int = _read_stat(target, ["stats", "hp"], int(target.get("hp", 10)))
 	var max_hp: int = _read_stat(target, ["stats", "max_hp"], int(target.get("max_hp", max(10, hp))))
 
-	# Compute base damage using CombatConstants helper
-	var dmg: int = CombatConstants.compute_mvp_damage(atk, def, 50) # compute base using Steady baseline; morale applied post-guard
+	# Compute base damage per MVP: deterministic and transparent
+	# Base = max(1, ATK - DEF). Morale and Guard are applied later per current rules.
+	var dmg: int = max(1, atk - def)
 	var base_dmg: int = dmg # keep a copy for guard delta calculations
 
 	# Guard interaction: one-shot shield halves final damage (floor), then consumes 1
@@ -186,6 +187,8 @@ static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 		"guard_reduced_by": guard_reduced_by,
 		"target_guard_after": guard_shield,
 		"atk_boost": atk_boost,
+		"attacker_atk": atk,
+		"target_def": def,
 		# --- bucket keys for logging/QA ---
 		"bucket_used": bucket_used,
 		"bucket_before": (bucket_before if bucket_used else null),

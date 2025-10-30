@@ -6,6 +6,8 @@
 # -----------------------------------------------------------------------------
 class_name CombatLog
 
+const SHOW_ATK_DEF_IN_LOG: bool = true
+
 var _buffer: Array[Dictionary] = []
 var _max_snapshots: int = 10
 
@@ -155,7 +157,32 @@ static func _format_action(a: Dictionary) -> String:
 				if atk_val != 0:
 					var sign_str: String = "+" if atk_val > 0 else ""
 					atk_tag = "  [+ATK %s%d]" % [sign_str, atk_val]
-			return "ATTACK %s → %s  dmg=%d%s%s%s%s%s%s" % [actor_label, target_label, dmg, extra, ko_tag, hp_tag, guard_tag, morale_tag, atk_tag]
+
+			# Optional ATK→DEF suffix for QA (only when flag is enabled and inputs are present)
+			var atkdef_tag: String = ""
+			if SHOW_ATK_DEF_IN_LOG:
+				# Try several common keys that ActionResolver might emit
+				var atk_in: int = 0
+				var def_in: int = 0
+				var has_vals: bool = false
+				if a.has("atk_used") and a.has("def_used"):
+					atk_in = int(a.get("atk_used", 0))
+					def_in = int(a.get("def_used", 0))
+					has_vals = true
+				elif a.has("attacker_atk") and a.has("target_def"):
+					atk_in = int(a.get("attacker_atk", 0))
+					def_in = int(a.get("target_def", 0))
+					has_vals = true
+				elif a.has("dmg_inputs") and typeof(a.get("dmg_inputs")) == TYPE_DICTIONARY:
+					var di: Dictionary = a.get("dmg_inputs")
+					if di.has("atk") and di.has("def"):
+						atk_in = int(di.get("atk", 0))
+						def_in = int(di.get("def", 0))
+						has_vals = true
+				if has_vals:
+					atkdef_tag = "  [ATK %d → DEF %d]" % [atk_in, def_in]
+
+			return "ATTACK %s → %s  dmg=%d%s%s%s%s%s%s%s" % [actor_label, target_label, dmg, extra, ko_tag, hp_tag, guard_tag, morale_tag, atk_tag, atkdef_tag]
 		CombatConstants.ActionType.GUARD:
 			var target_g: int = int(a.get("target_id", -1))
 			var target_label_g: String = str(a.get("target_name", str(target_g)))

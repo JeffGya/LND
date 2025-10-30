@@ -62,12 +62,66 @@ func unpack(d: Dictionary) -> void:
 	_retired = _sanitize_list(data.get("retired", []))
 	_fallen = _sanitize_list(data.get("fallen", []))
 
+	# Normalize stats on all buckets for forward-compat (Subtask I)
+	_active = _normalize_bucket(_active)
+	_recovering = _normalize_bucket(_recovering)
+	_retired = _normalize_bucket(_retired)
+	_fallen = _normalize_bucket(_fallen)
+
 	# next_id: prefer saved value; if missing or bad, compute from max existing id + 1
 	var saved_next: Variant = data.get("next_id", null)
 	if typeof(saved_next) == TYPE_INT and int(saved_next) >= 1:
 		_next_id = int(saved_next)
 	else:
 		_next_id = _compute_next_id()
+
+func _normalize_bucket(src: Array[Dictionary]) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for h in src:
+		if typeof(h) != TYPE_DICTIONARY:
+			continue
+		out.append(_normalize_hero_stats(h))
+	return out
+
+func _normalize_hero_stats(hero: Dictionary) -> Dictionary:
+	var h: Dictionary = hero.duplicate(true)
+	# If hero already has stats, fill missing safe canon keys; else leave hero as-is (combat will fallback)
+	if h.has("stats") and typeof(h["stats"]) == TYPE_DICTIONARY:
+		var s: Dictionary = (h["stats"] as Dictionary).duplicate(true)
+		# Required MVP keys (ints)
+		if not s.has("hp") or typeof(s["hp"]) != TYPE_INT:
+			s["hp"] = 0
+		if not s.has("max_hp") or typeof(s["max_hp"]) != TYPE_INT:
+			s["max_hp"] = int(s.get("hp", 0))
+		# Clamp hp to max_hp
+		if int(s["max_hp"]) < 1:
+			s["max_hp"] = 1
+		if int(s["hp"]) > int(s["max_hp"]):
+			s["hp"] = int(s["max_hp"])
+		# Optional combat keys
+		if not s.has("atk") or typeof(s["atk"]) != TYPE_INT:
+			s["atk"] = 0
+		if not s.has("def") or typeof(s["def"]) != TYPE_INT:
+			s["def"] = 0
+		if not s.has("agi") or typeof(s["agi"]) != TYPE_INT:
+			s["agi"] = 0
+		if not s.has("cha") or typeof(s["cha"]) != TYPE_INT:
+			s["cha"] = 0
+		if not s.has("int") or typeof(s["int"]) != TYPE_INT:
+			s["int"] = 0
+		if not s.has("acc") or typeof(s["acc"]) != TYPE_INT:
+			s["acc"] = 0
+		if not s.has("eva") or typeof(s["eva"]) != TYPE_INT:
+			s["eva"] = 0
+		if not s.has("crit") or typeof(s["crit"]) != TYPE_INT:
+			s["crit"] = 0
+		# Battle-state baselines
+		if not s.has("morale") or typeof(s["morale"]) != TYPE_INT:
+			s["morale"] = 50
+		if not s.has("fear") or typeof(s["fear"]) != TYPE_INT:
+			s["fear"] = 0
+		h["stats"] = s
+	return h
 
 # -------------------------------------------------------------
 # Roster operations (used by services/UI/tests)
@@ -151,18 +205,19 @@ func _validate_hero(h: Variant) -> Dictionary:
 		return {"ok": true, "message": "OK (MVP)"}
 
 	# --- Future richer schema (backward-compat) ---
-	# Accept earlier scaffold with stats and 6-trait model
+	# Accept earlier scaffold with stats and 6-trait model, but allow missing optional combat keys.
 	if typeof(hd.get("traits", null)) == TYPE_DICTIONARY and typeof(hd.get("stats", null)) == TYPE_DICTIONARY:
-		var tr2 := hd.traits as Dictionary
-		var st2 := hd.stats as Dictionary
-		var six := ["courage","ambition","empathy","wisdom","discipline","resolve"]
-		var six_ok := true
+		var tr2: Dictionary = hd.traits as Dictionary
+		var st2: Dictionary = hd.stats as Dictionary
+		var six: Array[String] = ["courage","ambition","empathy","wisdom","discipline","resolve"]
+		var six_ok: bool = true
 		for t2 in six:
 			if typeof(tr2.get(t2, null)) != TYPE_INT:
 				six_ok = false
 				break
-		var stats_ok := typeof(st2.get("hp", null)) == TYPE_INT and typeof(st2.get("morale", null)) == TYPE_INT and typeof(st2.get("fear", null)) == TYPE_INT
-		if six_ok and stats_ok and has_name:
+		# For stats, require only hp; morale/fear can be missing (we'll fill on unpack)
+		var has_hp: bool = typeof(st2.get("hp", null)) == TYPE_INT
+		if six_ok and has_name and has_hp:
 			return {"ok": true, "message": "OK (legacy rich)"}
 
 	return {"ok": false, "message": "hero does not match MVP or legacy schema"}

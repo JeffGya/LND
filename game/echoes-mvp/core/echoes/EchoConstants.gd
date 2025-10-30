@@ -125,3 +125,44 @@ const ARCHETYPE_META := {
     ARCHETYPE_EMPATHIC:   {"display_name": "Empathic",   "blurb": "Emotionally attuned; responds to allies’ states."},
     ARCHETYPE_AMBITIOUS:  {"display_name": "Ambitious",  "blurb": "Goal-oriented and assertive; seeks growth and recognition."}
 }
+
+# -------------------------------
+# Combat Stat Keys (Canonical)
+# -------------------------------
+# Canonical dictionary field names used across EchoFactory, CombatEngine,
+# ActionResolver, Initiative, Save IO, and UI.  
+# MVP rule: values stored under these keys are **INT** (avoid Variant warnings).
+# Deterministic: base stats are derived from traits (no RNG) at creation.
+
+const STAT_HP: String      = "hp"
+const STAT_MAX_HP: String  = "max_hp"
+const STAT_ATK: String     = "atk"
+const STAT_DEF: String     = "def"
+const STAT_AGI: String     = "agi"
+
+const STAT_CHA: String     = "cha"
+const STAT_INT: String     = "int"
+
+const STAT_ACC: String     = "acc"
+const STAT_EVA: String     = "eva"
+const STAT_CRIT: String    = "crit"
+
+const STAT_MORALE: String  = "morale"
+const STAT_FEAR: String    = "fear"
+
+# Readability groups (used for iteration/validation in builders and tests)
+const PRIMARY_STAT_KEYS := [
+    STAT_HP, STAT_MAX_HP, STAT_ATK, STAT_DEF, STAT_AGI
+]
+
+const SOCIAL_STAT_KEYS := [
+    STAT_CHA, STAT_INT
+]
+
+const COMBAT_AUX_KEYS := [
+    STAT_ACC, STAT_EVA, STAT_CRIT
+]
+
+const EMOTION_KEYS := [
+    STAT_MORALE, STAT_FEAR
+]

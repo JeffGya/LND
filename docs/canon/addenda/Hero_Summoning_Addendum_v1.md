@@ -19,6 +19,7 @@ All downstream systems — particularly **EchoFactory**, **SummonService**, and 
 | Summon Cost | 80 Ase | **60 Ase** | Encourages faster roster growth without breaking progression; 1–1.5 missions fund a summon. |
 | Starter Hero | None | **One free hero on new campaign start** (no Ase cost) | Prevents early grind wall, provides instant playable Echo. |
 | Trait Focus | 6-trait full model | **Courage / Wisdom / Faith only (MVP scope)** | Keeps first iteration simple while retaining emotional spread. |
+| Combat Stat Baseline | Derived from traits, mid-band (50+ HP at birth) | Early-game compressed (HP ~20–30, ATK ~10–15) for summoned/starter Echoes | MVP heroes were spawning at midgame power; rebalanced to match training encounters and §12 pacing. |
 | RNG Determinism | per-seed generation | **Channel-salted RNG ("summon", "starter")** | Ensures reproducible rolls and telemetry clarity. |
 
 ---
@@ -89,17 +90,42 @@ These are deterministic tags (stored as `"guardian"`, `"warrior"`, `"archer"`) w
 
 ---
 
+### Combat Stat Derivation (v1.1)
+
+**EchoFactory.gd** is the single source of truth for these calculations. Combat stats for summoned and starter Echoes are derived from their core traits as follows (all values rounded to int):
+
+```gdscript
+hp = max(floor(5 + courage * 0.25 + faith * 0.15), 15)
+atk = round(4 + courage * 0.12 + faith * 0.05)
+def = round(2 + wisdom * 0.12 + faith * 0.08)
+agi = round(2 + wisdom * 0.08 + courage * 0.08)
+cha = round(1 + faith * 0.08 + wisdom * 0.08)
+int = round(4 + wisdom * 0.22 + courage * 0.04)
+max_hp = hp  # on birth
+```
+
+---
+
+#### Post-MVP Stat Fields (reserved)
+
+These fields are already present in the hero `stats` dictionary in code but are **intentionally 0 for MVP**.  
+The fields include `acc`, `eva`, `crit`, and `mag`/`spirit_pow` (name TBD, tied to Obayifo/Onyamesu path).  
+Their purpose for (`acc`, `eva` and `crit`) is to support hit/graze/bullseye resolution, evasion/initiative interactions, and crit-tier damage.  
+According to canon, they must obey **Legacy Never Dies §9 Combat** and **§12 Balance Curves** once activated.  
+Activation condition for `mag`/`spirit_pow` (name TBD): these stats will be enabled when we introduce non-physical classes (Obayifo, Onyamesu) and realm-specific enemy resistances.
+
 ## 🧩 System Integration Map
 
 | Module | Role | New/Updated |
 |---------|------|-------------|
 | `EconomyConstants.gd` | Summon cost = 60; RNG channels (“summon”, “starter”) | Updated |
 | `EchoConstants.gd` | Class codes + trait ranges + rarity map | New |
-| `EchoFactory.gd` | Deterministic summon generator | New |
+| `EchoFactory.gd` | Deterministic summon generator + v1.1 early-game combat stat compression | New |
 | `SummonService.gd` | Economy + creation pipeline | New |
 | `HeroesIO.gd` | Roster persistence | New |
 | `DebugConsole.gd` | `/summon`, `/list_heroes`, `/hero_info` | Updated |
 | `test_summon.gd` | Determinism & economy validation | New |
+| `core/combat/EnemyFactory.gd` | Training/dummy enemy stat alignment | Updated (Oct 2025) |
 
 ---
 
@@ -119,6 +145,15 @@ These are deterministic tags (stored as `"guardian"`, `"warrior"`, `"archer"`) w
 - **Starter hero** is created during `NewGameService.init_save()`, using RNG channel `"starter"`.  
 - **Testing rule:** Fixed seed = fixed heroes; changes to RNG salts or name bank require bumping schema version.  
 - **Telemetry:** Every summon logs `{ evt:"summon", cat:"heroes", cost_ase, ids:[…] }`.
+
+---
+
+### MVP Combat Balance Notes (Oct 30 2025)
+
+- Heroes at birth now land around 20–30 HP and 10–15 ATK (depending on trait rolls 30–70).  
+- Training enemies (e.g. “Training Wraith”) rebalanced to HP 40, ATK 6–8, DEF 4, AGI 5 to avoid one-shotting weak Echoes.  
+- This change preserves determinism: same campaign seed → same hero → same stats.  
+- Midgame growth to 100–200 HP is deferred to rank-ups / calling / legacy growth, **not** to summoning.
 
 ---
 

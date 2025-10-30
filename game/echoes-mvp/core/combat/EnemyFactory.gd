@@ -14,10 +14,11 @@ class_name EnemyFactory
 ## MVP baseline stats for dummy enemies. Easy to read in logs.
 const DUMMY_BASE := {
 	"rank": 1,
-	"hp": 10,
-	"max_hp": 10,
-	"atk": 3,
-	"def": 1,
+	"hp": 40,       # hp == max_hp at spawn (training target)
+	"max_hp": 40,
+	"atk": 8,       # chips vs early hero DEF (no one-shots)
+	"def": 4,       # reduces early hero ATK to ~30–60 dmg
+	"agi": 5,       # sometimes ahead of slower heroes
 	"morale": 50,
 	"fear": 0,
 }
@@ -49,6 +50,7 @@ static func spawn_dummy_pack(count: int, seed: int) -> Array[Dictionary]:
 			"max_hp": DUMMY_BASE.max_hp,
 			"atk": DUMMY_BASE.atk,
 			"def": DUMMY_BASE.def,
+			"agi": DUMMY_BASE.agi,
 			"morale": DUMMY_BASE.morale,
 			"fear": DUMMY_BASE.fear,
 			"tags": ["dummy"],
@@ -57,5 +59,9 @@ static func spawn_dummy_pack(count: int, seed: int) -> Array[Dictionary]:
 		out.append(enemy)
 
 	# Defensive: ensure stable order by id even if future variants add shuffling.
-	out.sort_custom(func(a, b): return int(a["id"]) < int(b["id"]))
+	out.sort_custom(Callable(EnemyFactory, "_cmp_id_asc"))
 	return out
+
+# Comparator: sort by id ascending
+static func _cmp_id_asc(a: Dictionary, b: Dictionary) -> bool:
+	return int(a.get("id", 0)) < int(b.get("id", 0))

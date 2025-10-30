@@ -55,6 +55,8 @@ static func _build_hero(campaign_seed: int, channel: String, roster_count: int, 
 		"created_utc": utc_now
 	}
 
+	hero["stats"] = _compute_stats(c, w, f)
+
 	# Debug-time schema check
 	if OS.is_debug_build():
 		var v := Echo.validate(hero)
@@ -64,8 +66,69 @@ static func _build_hero(campaign_seed: int, channel: String, roster_count: int, 
 	return hero
 
 # ----------------------
+# Deterministic combat stat generation (MVP)
+# ----------------------
+static func _compute_stats(c: int, w: int, f: int) -> Dictionary:
+	# Base formulas — deterministic, early-game compressed (pass 2)
+	# Target after seeing live rolls: HP should sit mostly in 20–30 for typical 30–70 traits,
+	# with high-roll heroes (all traits ~60+) still staying under ~32–34.
+	# HP: 5 + courage×0.25 + faith×0.15  → clamp min 15
+	var hp: int = _ri(5.0 + 0.25 * float(c) + 0.15 * float(f))
+	if hp < 15:
+		hp = 15
+
+	# ATK: 4 + courage×0.12 + faith×0.05  → ~10–15 for normal heroes
+	var atk: int = _ri(4.0 + 0.12 * float(c) + 0.05 * float(f))
+	if atk < 1:
+		atk = 1
+
+	# DEF: 2 + wisdom×0.12 + faith×0.08  → small but present, stays under ~12
+	var def: int = _ri(2.0 + 0.12 * float(w) + 0.08 * float(f))
+	if def < 0:
+		def = 0
+
+	# AGI: 2 + wisdom×0.08 + courage×0.08  → slightly lower than before to match smaller HP pool
+	var agi: int = _ri(2.0 + 0.08 * float(w) + 0.08 * float(c))
+	if agi < 0:
+		agi = 0
+
+	# CHA: 1 + faith×0.08 + wisdom×0.08
+	var cha: int = _ri(1.0 + 0.08 * float(f) + 0.08 * float(w))
+	if cha < 0:
+		cha = 0
+
+	# INT: 4 + wisdom×0.22 + courage×0.04  → keep this a bit higher for future AI/decision use
+	var intel: int = _ri(4.0 + 0.22 * float(w) + 0.04 * float(c))
+	if intel < 0:
+		intel = 0
+
+	# --- MVP placeholders (deterministic but not yet active in combat) ---
+	var acc: int = 0
+	var eva: int = 0
+	var crit: int = 0
+
+	return {
+		EchoConstants.STAT_HP: hp,
+		EchoConstants.STAT_MAX_HP: hp,
+		EchoConstants.STAT_ATK: atk,
+		EchoConstants.STAT_DEF: def,
+		EchoConstants.STAT_AGI: agi,
+		EchoConstants.STAT_CHA: cha,
+		EchoConstants.STAT_INT: intel,
+		EchoConstants.STAT_ACC: acc,
+		EchoConstants.STAT_EVA: eva,
+		EchoConstants.STAT_CRIT: crit,
+		EchoConstants.STAT_MORALE: 50,
+		EchoConstants.STAT_FEAR: 0,
+	}
+
+# ----------------------
 # Helpers
 # ----------------------
+# Integer rounding helper (class-scope to avoid local lambda issues on some builds)
+static func _ri(x: float) -> int:
+	return int(round(x))
+
 static func _derive_seed(campaign_seed: int, channel: String, index: int) -> int:
 	# Use a stable hash of a compact string to avoid 64-bit overflow pitfalls.
 	# Mixing back campaign_seed via XOR reduces trivial collisions.

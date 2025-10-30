@@ -264,20 +264,22 @@ func _normalize_allies(allies: Array) -> Array[Dictionary]:
 	for a in allies:
 		match typeof(a):
 			TYPE_INT:
-				out.append({
-					"id": int(a),
-					"stats": {"hp": 10, "max_hp": 10, "atk": 3, "def": 1, "morale": 50},
-					"fear": 0,
-					"status": "idle",
-				})
+				var id_val: int = int(a)
+				var hero: Dictionary = _load_hero_by_id(id_val)
+				var ent: Dictionary = _to_combat_entity(hero, id_val)
+				out.append(ent)
 			TYPE_DICTIONARY:
-				# Ensure minimal fields exist
-				var d: Dictionary = a
-				if not d.has("id"): d["id"] = 0
-				if not d.has("stats"): d["stats"] = {"hp":10, "max_hp":10, "atk":3, "def":1, "morale":50}
-				if not d.has("fear"): d["fear"] = 0
-				if not d.has("status"): d["status"] = "idle"
-				out.append(d)
+				var d_in: Dictionary = a
+				# Ensure minimal shape; keep existing stats if present
+				if not d_in.has("id"): d_in["id"] = 0
+				var d_out: Dictionary = d_in
+				if not d_out.has("stats") or typeof(d_out["stats"]) != TYPE_DICTIONARY:
+					d_out["stats"] = _fallback_stats()
+				else:
+					d_out["stats"] = _fill_missing_stats(d_out["stats"])
+				if not d_out.has("fear"): d_out["fear"] = 0
+				if not d_out.has("status"): d_out["status"] = "idle"
+				out.append(d_out)
 			_:
 				pass
 	return out
@@ -287,22 +289,175 @@ func _normalize_enemies(enemies: Array[Dictionary]) -> Array[Dictionary]:
 	for e in enemies:
 		if typeof(e) != TYPE_DICTIONARY:
 			continue
-		# Fill minimal fields if missing (compatible with EnemyFactory)
-		if not e.has("id"): e["id"] = 1000 + out.size()
-		if not e.has("hp") and (not e.has("stats") or not e.stats.has("hp")):
-			e["hp"] = 10
-		if not e.has("max_hp") and (not e.has("stats") or not e.stats.has("max_hp")):
-			e["max_hp"] = 10
-		if not e.has("atk") and (not e.has("stats") or not e.stats.has("atk")):
-			e["atk"] = 3
-		if not e.has("def") and (not e.has("stats") or not e.stats.has("def")):
-			e["def"] = 0
-		if not e.has("morale") and (not e.has("stats") or not e.stats.has("morale")):
-			e["morale"] = 50
-		if not e.has("fear"): e["fear"] = 0
-		if not e.has("status"): e["status"] = "idle"
+
+		# Ensure a stable id for determinism
+		if not e.has("id"):
+			e["id"] = 1000 + out.size()
+
+		# Start from existing stats if present, else empty dict
+		var s: Dictionary = {}
+		if e.has("stats") and typeof(e.stats) == TYPE_DICTIONARY:
+			s = (e.stats as Dictionary).duplicate(true)
+
+		# Pull flat values if provided (we preserve existing numbers)
+		var flat_hp_set: bool = e.has("hp")
+		var flat_max_hp_set: bool = e.has("max_hp")
+		var flat_atk_set: bool = e.has("atk")
+		var flat_def_set: bool = e.has("def")
+		var flat_agi_set: bool = e.has("agi")
+		var flat_cha_set: bool = e.has("cha")
+		var flat_int_set: bool = e.has("int")
+		var flat_acc_set: bool = e.has("acc")
+		var flat_eva_set: bool = e.has("eva")
+		var flat_crit_set: bool = e.has("crit")
+
+		# Write/ensure canonical stats, preferring provided values
+		if flat_hp_set:
+			_ensure_stat_int(s, EchoConstants.STAT_HP, int(e.get("hp", 10)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_HP, 10)
+
+		if flat_max_hp_set:
+			_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(e.get("max_hp", int(s.get(EchoConstants.STAT_HP, 10)))))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(s.get(EchoConstants.STAT_HP, 10)))
+
+		if flat_atk_set:
+			_ensure_stat_int(s, EchoConstants.STAT_ATK, int(e.get("atk", 3)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_ATK, 3)
+
+		if flat_def_set:
+			_ensure_stat_int(s, EchoConstants.STAT_DEF, int(e.get("def", 0)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_DEF, 0)
+
+		if flat_agi_set:
+			_ensure_stat_int(s, EchoConstants.STAT_AGI, int(e.get("agi", 5)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_AGI, 5)
+
+		if flat_cha_set:
+			_ensure_stat_int(s, EchoConstants.STAT_CHA, int(e.get("cha", 0)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_CHA, 0)
+
+		if flat_int_set:
+			_ensure_stat_int(s, EchoConstants.STAT_INT, int(e.get("int", 0)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_INT, 0)
+
+		if flat_acc_set:
+			_ensure_stat_int(s, EchoConstants.STAT_ACC, int(e.get("acc", 0)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_ACC, 0)
+
+		if flat_eva_set:
+			_ensure_stat_int(s, EchoConstants.STAT_EVA, int(e.get("eva", 0)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_EVA, 0)
+
+		if flat_crit_set:
+			_ensure_stat_int(s, EchoConstants.STAT_CRIT, int(e.get("crit", 0)))
+		else:
+			_ensure_stat_int(s, EchoConstants.STAT_CRIT, 0)
+
+		# Morale/Fear (enemies ignore morale in MVP but keep a neutral value for shape)
+		_ensure_stat_int(s, EchoConstants.STAT_MORALE, 50)
+		_ensure_stat_int(s, EchoConstants.STAT_FEAR, int(e.get("fear", 0)))
+
+		# Save back canonical stats
+		e["stats"] = s
+
+		# Backfill flat keys from stats when missing (compat with any legacy readers)
+		if not flat_hp_set:
+			e["hp"] = int(s.get(EchoConstants.STAT_HP, 10))
+		if not flat_max_hp_set:
+			e["max_hp"] = int(s.get(EchoConstants.STAT_MAX_HP, e.get("hp", 10)))
+		if not flat_atk_set:
+			e["atk"] = int(s.get(EchoConstants.STAT_ATK, 3))
+		if not flat_def_set:
+			e["def"] = int(s.get(EchoConstants.STAT_DEF, 0))
+		if not flat_agi_set:
+			e["agi"] = int(s.get(EchoConstants.STAT_AGI, 5))
+		if not e.has("fear"):
+			e["fear"] = int(s.get(EchoConstants.STAT_FEAR, 0))
+		if not e.has("status"):
+			e["status"] = "idle"
+
 		out.append(e)
 	return out
+
+# --- Ally hydration helpers --------------------------------------------------
+
+static func _load_hero_by_id(id_val: int) -> Dictionary:
+	# Path 1: Autoload object (usual in GDScript projects)
+	if typeof(SaveService) != TYPE_NIL and SaveService.has_method("hero_get"):
+		var hero1: Variant = SaveService.hero_get(int(id_val))
+		if typeof(hero1) == TYPE_DICTIONARY:
+			return hero1 as Dictionary
+	# Path 2: Engine singleton (only if SaveService is exposed that way)
+	if Engine.has_singleton("SaveService"):
+		var svc: Variant = Engine.get_singleton("SaveService")
+		if svc and svc.has_method("hero_get"):
+			var hero2: Variant = svc.call("hero_get", int(id_val))
+			if typeof(hero2) == TYPE_DICTIONARY:
+				return hero2 as Dictionary
+	# No source available → return empty to trigger safe fallbacks upstream
+	return {}
+
+static func _to_combat_entity(hero: Dictionary, fallback_id: int) -> Dictionary:
+	# Build a combat entity from a hero record. Preserve existing stats if present,
+	# otherwise create a safe, typed fallback block.
+	var ent_id: int = int(hero.get("id", fallback_id))
+	var name_s: String = String(hero.get("name", ""))
+	var arch_s: String = String(hero.get("archetype", "none"))
+	var stats_in: Dictionary = {}
+	if hero.has("stats") and typeof(hero["stats"]) == TYPE_DICTIONARY:
+		stats_in = hero["stats"]
+	var stats_out: Dictionary = _fill_missing_stats(stats_in) if stats_in.size() > 0 else _fallback_stats()
+	return {
+		"id": ent_id,
+		"name": name_s,
+		"archetype": arch_s,
+		"stats": stats_out,
+		"fear": int(hero.get("fear", 0)),
+		"status": String(hero.get("status", "idle")),
+	}
+
+static func _fallback_stats() -> Dictionary:
+	# Safe typed defaults for when hero has no stats (older saves or bad data).
+	return {
+		EchoConstants.STAT_HP: 1,
+		EchoConstants.STAT_MAX_HP: 1,
+		EchoConstants.STAT_ATK: 0,
+		EchoConstants.STAT_DEF: 0,
+		EchoConstants.STAT_AGI: 0,
+		EchoConstants.STAT_CHA: 0,
+		EchoConstants.STAT_INT: 0,
+		EchoConstants.STAT_ACC: 0,
+		EchoConstants.STAT_EVA: 0,
+		EchoConstants.STAT_CRIT: 0,
+		EchoConstants.STAT_MORALE: 50,
+		EchoConstants.STAT_FEAR: 0,
+	}
+
+static func _fill_missing_stats(stats_in: Dictionary) -> Dictionary:
+	# Ensure all canonical keys exist and are ints; do not change provided values.
+	var s: Dictionary = stats_in.duplicate(true)
+	_ensure_stat_int(s, EchoConstants.STAT_HP, 1)
+	_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(s.get(EchoConstants.STAT_HP, 1)))
+	_ensure_stat_int(s, EchoConstants.STAT_ATK, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_DEF, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_AGI, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_CHA, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_INT, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_ACC, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_EVA, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_CRIT, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_MORALE, 50)
+	_ensure_stat_int(s, EchoConstants.STAT_FEAR, 0)
+	return s
 
 func _find_entity(id_val: int) -> Variant:
 	for a in _state.get("allies", []):
@@ -547,11 +702,7 @@ func _pick_weakest(group: Array[Dictionary]) -> Dictionary:
 		pool.append({"id": id_val, "hp": hp})
 	if pool.is_empty():
 		return {}
-	pool.sort_custom(func(a, b):
-		if int(a["hp"]) == int(b["hp"]):
-			return int(a["id"]) < int(b["id"])
-		return int(a["hp"]) < int(b["hp"])
-	)
+	pool.sort_custom(Callable(self, "_cmp_hp_asc_id_asc"))
 	return pool[0]
 
 func _pick_nearest(actor_id: int, group: Array[Dictionary], ctx: Dictionary) -> Dictionary:
@@ -663,3 +814,16 @@ func _pair_key(a: int, b: int) -> int:
 	var aa: int = a & 0x7fff
 	var bb: int = b & 0x7fff
 	return (aa << 15) | bb
+
+# Comparator for sorting candidate entities by hp ascending, then id ascending
+static func _cmp_hp_asc_id_asc(a: Dictionary, b: Dictionary) -> bool:
+	var ahp: int = int(a.get("hp", 0))
+	var bhp: int = int(b.get("hp", 0))
+	if ahp == bhp:
+		return int(a.get("id", 0)) < int(b.get("id", 0))
+	return ahp < bhp
+
+# Ensure an int value exists under a key in a dictionary, else write default
+static func _ensure_stat_int(s: Dictionary, k: String, v: int) -> void:
+	if not s.has(k) or typeof(s[k]) != TYPE_INT:
+		s[k] = int(v)

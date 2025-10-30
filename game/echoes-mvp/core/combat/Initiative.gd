@@ -19,72 +19,65 @@ class_name Initiative
 ##   allies:Array[Dictionary], enemies:Array[Dictionary]
 ## @return Array[int] ordered list of entity ids
 static func compute_order(ctx: Dictionary) -> Array[int]:
-	var battle_seed: int = int(ctx.get("seed", 0))
-	var round_index: int = max(1, int(ctx.get("round_index", 1)))
-
-	var entries: Array[Dictionary] = _collect_entries(ctx, battle_seed, round_index)
-
-	# Sort by (score desc, tiebreak desc, id asc) deterministically
-	entries.sort_custom(func(a, b):
-		if int(a["score"]) == int(b["score"]):
-			if int(a["tiebreak"]) == int(b["tiebreak"]):
-				return int(a["id"]) < int(b["id"])  # final stable fallback
-			return int(a["tiebreak"]) > int(b["tiebreak"])
-		return int(a["score"]) > int(b["score"])
-	)
-
+	var entries: Array[Dictionary] = _collect_entries(ctx)
+	# Sort by AGI desc, then id asc (deterministic)
+	entries.sort_custom(Callable(Initiative, "_cmp_agi_desc_id_asc"))
 	var order: Array[int] = []
 	for e in entries:
-		order.append(int(e["id"]))
+		order.append(int(e.get("id", 0)))
 	return order
 
 
 # Internal helpers -----------------------------------------------------------
 
-## Gathers allies and enemies into a flat list of {id, score, tiebreak}.
-static func _collect_entries(ctx: Dictionary, battle_seed: int, round_index: int) -> Array[Dictionary]:
+## Gathers allies and enemies into a flat list of {id, agi}.
+static func _collect_entries(ctx: Dictionary) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	var allies: Array = ctx.get("allies", [])
 	var enemies: Array = ctx.get("enemies", [])
-
 	for ent in allies:
-		var e: Dictionary = _build_entry(ent, battle_seed, round_index)
+		var e: Dictionary = _build_entry(ent)
 		if e.size() > 0:
 			out.append(e)
 	for ent in enemies:
-		var e2: Dictionary = _build_entry(ent, battle_seed, round_index)
+		var e2: Dictionary = _build_entry(ent)
 		if e2.size() > 0:
 			out.append(e2)
 	return out
 
 ## Builds a single entry dictionary for sorting. Returns empty dict on bad data.
-static func _build_entry(entity: Dictionary, battle_seed: int, round_index: int) -> Dictionary:
+static func _build_entry(entity: Dictionary) -> Dictionary:
 	if typeof(entity) != TYPE_DICTIONARY:
 		return {}
 	var id_val: int = int(entity.get("id", -1))
 	if id_val < 0:
 		return {}
+	if not _alive(entity):
+		return {}
+	var agi: int = _extract_stat(entity, ["stats", EchoConstants.STAT_AGI], 5)
+	# Fallback to flat key if no stats dict exists (enemy dummies)
+	if agi == 5 and entity.has(EchoConstants.STAT_AGI):
+		agi = int(entity.get(EchoConstants.STAT_AGI, 5))
+	return {"id": id_val, "agi": agi}
 
-	var courage: int = _extract_stat(entity, ["stats", "courage"], 40)
-	var wisdom: int = _extract_stat(entity, ["stats", "wisdom"], 40)
-	var morale: int = _extract_stat(entity, ["stats", "morale"], 50)
-	# Enemies from EnemyFactory may not have stats; fallbacks above cover that.
-	if morale == 50 and entity.has("morale"):
-		morale = int(entity.get("morale", 50))
+static func _alive(entity: Dictionary) -> bool:
+	var hp: int = _extract_stat(entity, ["stats", EchoConstants.STAT_HP], -1)
+	if hp == -1:
+		# Fallback to flat key if no stats dict exists
+		hp = int(entity.get(EchoConstants.STAT_HP, 0))
+	if hp <= 0:
+		return false
+	if String(entity.get("status", "")) == "downed":
+		return false
+	return true
 
-	var tier_bonus: int = _morale_tier_bonus(morale)
-	# Gentle, integer-based formula that reads well in logs.
-	var base: int = 10
-	var c_term: int = int(floor(float(courage) / 10.0))     # 0..10 for 0..100
-	var w_term: int = int(floor(float(wisdom) / 20.0))      # 0..5  for 0..100
-	var score: int = base + c_term + w_term + tier_bonus
+static func _cmp_agi_desc_id_asc(a: Dictionary, b: Dictionary) -> bool:
+	var a_agi: int = int(a.get("agi", 0))
+	var b_agi: int = int(b.get("agi", 0))
+	if a_agi == b_agi:
+		return int(a.get("id", 0)) < int(b.get("id", 0))
+	return a_agi > b_agi
 
-	var tiebreak: int = _tiebreak(battle_seed, round_index, id_val)
-	return {
-		"id": id_val,
-		"score": score,
-		"tiebreak": tiebreak,
-	}
 
 ## Reads a nested integer safely from a dictionary using a path.
 static func _extract_stat(entity: Dictionary, path: Array, default_val: int) -> int:

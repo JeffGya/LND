@@ -274,6 +274,9 @@ func _register_default_commands() -> void:
 		var seed := int(h.get("seed", 0))
 		var created := String(h.get("created_utc", ""))
 		_print_line("  Traits: Courage %d, Wisdom %d, Faith %d  |  Seed: %d  |  Created: %s" % [c, w, f, seed, created])
+		var combat_line: String = _format_combat_line(h)
+		if combat_line != "":
+			_print_line("  " + combat_line)
 		return 0
 
 	# --- Core architecture helpers ---
@@ -392,6 +395,53 @@ func _register_default_commands() -> void:
 			else:
 				_print_line("%s => missing" % abs_path)
 		return 0
+
+	# --- Hero roster validation (save/roster QA) ---
+	_commands["/validate_roster"] = func(_args: Array) -> int:
+		# Check for SaveService node and hero list/snapshot
+		if not has_node("/root/SaveService"):
+			_print_line("[validate_roster] SaveService not found at /root/SaveService")
+			return 1
+		var ss := get_node("/root/SaveService")
+		var roster: Array = []
+		if ss.has_method("heroes_list"):
+			roster = ss.heroes_list()
+		elif ss.has_method("snapshot"):
+			var snap : Dictionary = ss.snapshot()
+			if typeof(snap) == TYPE_DICTIONARY and snap.has("hero_roster"):
+				roster = (snap["hero_roster"].get("active", []) as Array)
+		else:
+			_print_line("[validate_roster] SaveService has no heroes_list() or snapshot()")
+			return 1
+		if roster.is_empty():
+			_print_line("[validate_roster] No heroes found in roster.")
+			return 0
+		var total := roster.size()
+		var n_ok := 0
+		var n_fixed := 0
+		var n_warn := 0
+		var n_fail := 0
+		_print_line("[validate_roster] Validating %d heroes…" % total)
+		for h in roster:
+			var res: Dictionary = _validate_hero_shape_for_debug(h)
+			var id_i: int = int(h.get("id", -1))
+			var name_s: String = String(h.get("name", "?"))
+			var msg := "[validate_roster] id=%s name=%s" % [str(id_i), name_s]
+			if res.has("ok") and res["ok"] == true and res.get("fixes", []).is_empty() and res.get("warnings", []).is_empty():
+				msg += " — OK"
+				n_ok += 1
+			elif res.has("ok") and res["ok"] == true and not res.get("fixes", []).is_empty():
+				msg += " — FIXED: %s" % (", ".join(res.get("fixes", [])))
+				n_fixed += 1
+			elif not res.get("warnings", []).is_empty():
+				msg += " — WARN: %s" % (", ".join(res.get("warnings", [])))
+				n_warn += 1
+			else:
+				msg += " — INVALID"
+				n_fail += 1
+			_print_line(msg)
+		_print_line("[validate_roster] OK=%d  FIXED=%d  WARN=%d  INVALID=%d" % [n_ok, n_fixed, n_warn, n_fail])
+		return 0 if n_fail == 0 else 1
 
 	# --- Archetype distribution sampler -----------------------------------------
 	_commands["/archetype_sample"] = func(args: Array) -> int:
@@ -1237,6 +1287,9 @@ func _morale_label_and_mult(morale_val: int) -> Dictionary:
 	var mult := float(CombatConstants.morale_multiplier_for_tier(tier))
 	return {"morale": m, "tier": tier, "label": label, "mult": mult}
 
+static func _cmp_pct_desc(a: Dictionary, b: Dictionary) -> bool:
+	return float(a.get("pct", 0.0)) > float(b.get("pct", 0.0))
+
 func _pad_right(s: String, width: int) -> String:
 	var pad := width - s.length()
 	return s + (" ".repeat(max(0, pad)))
@@ -1251,8 +1304,7 @@ func _print_pct_bars(tally: Dictionary, total: int) -> void:
 		var n := int(tally[k])
 		var pct := (float(n) / float(total)) * 100.0
 		percs.append({"k": String(k), "n": n, "pct": pct})
-	var _cmp_pct_desc := func(a, b) -> bool: return a["pct"] > b["pct"]
-	percs.sort_custom(_cmp_pct_desc)  # desc by pct
+	percs.sort_custom(Callable(DebugConsole, "_cmp_pct_desc"))
 	var max_pct := 0.0001
 	for row in percs:
 		max_pct = max(max_pct, float(row["pct"]))
@@ -1279,6 +1331,41 @@ func _format_hero_summary(h: Dictionary) -> String:
 	var f := int(tr.get("faith", 0))
 	var arch := String(h.get("archetype", "n/a"))
 	return "%s  [id=%d, r%d, class=%s, arch=%s, gender=%s] — (Courage %d / Wisdom %d / Faith %d)" % [name, id_i, rank, cls, arch, gen, c, w, f]
+
+
+# Helper to read an int from stats dict, then hero dict, else fallback.
+func _read_stat_from(hero: Dictionary, s: Dictionary, key: String, fallback: int) -> int:
+	# Prefer stats dict, then flat hero key, else fallback.
+	if typeof(s) == TYPE_DICTIONARY and s.has(key):
+		return int(s.get(key, fallback))
+	if hero.has(key):
+		return int(hero.get(key, fallback))
+	return fallback
+
+# Helper: Format a one-line combat stat summary for a hero dictionary.
+func _format_combat_line(hero: Dictionary) -> String:
+	# Read combat stats safely from hero["stats"] (preferred) or flat keys as fallback.
+	# Expected MVP keys (all ints): hp, max_hp, atk, def, agi, cha, int, morale, fear.
+	# Returns a compact single-line summary or an empty string if nothing is present.
+	var s: Dictionary = {}
+	if hero.has("stats") and typeof(hero["stats"]) == TYPE_DICTIONARY:
+		s = hero["stats"]
+
+	var hp: int = _read_stat_from(hero, s, EchoConstants.STAT_HP, 0)
+	var max_hp: int = _read_stat_from(hero, s, EchoConstants.STAT_MAX_HP, max(0, hp))
+	var atk: int = _read_stat_from(hero, s, EchoConstants.STAT_ATK, 0)
+	var def: int = _read_stat_from(hero, s, EchoConstants.STAT_DEF, 0)
+	var agi: int = _read_stat_from(hero, s, EchoConstants.STAT_AGI, 0)
+	var cha: int = _read_stat_from(hero, s, EchoConstants.STAT_CHA, 0)
+	var intel: int = _read_stat_from(hero, s, EchoConstants.STAT_INT, 0)
+	var morale: int = _read_stat_from(hero, s, EchoConstants.STAT_MORALE, 50)
+	var fear: int = _read_stat_from(hero, s, EchoConstants.STAT_FEAR, 0)
+
+	# If everything is zero and max_hp is zero, likely no stats present; return empty to avoid noise.
+	var all_zero: bool = (hp == 0 and max_hp == 0 and atk == 0 and def == 0 and agi == 0 and cha == 0 and intel == 0 and morale == 0 and fear == 0)
+	if all_zero:
+		return ""
+	return "Combat: HP %d/%d | ATK %d | DEF %d | AGI %d | CHA %d | INT %d | Morale %d | Fear %d" % [hp, max_hp, atk, def, agi, cha, intel, morale, fear]
 
 func _find_ase_service() -> Node:
 	var scene := get_tree().current_scene
@@ -1480,3 +1567,49 @@ func _on_console_submit(text: String) -> void:
 # Handler for live economy updates (signal: economy_changed)
 func _on_economy_changed(kind: String, delta: int, new_value: int) -> void:
 	_print_line("[economy] %s %+d → %d" % [kind, delta, new_value])
+
+func _validate_hero_shape_for_debug(hero: Dictionary) -> Dictionary:
+	var name_s: String = String(hero.get("name", "?"))
+	var id_i: int = int(hero.get("id", -1))
+	var out: Dictionary = {
+		"ok": true,
+		"fixes": [],
+		"warnings": []
+	}
+	# Basic presence
+	if name_s == "?":
+		out["warnings"].append("missing name")
+	if id_i <= 0:
+		out["warnings"].append("missing or invalid id")
+	# Stats analysis (matches HeroesIO Subtask I logic in spirit, but read-only)
+	var has_stats: bool = hero.has("stats") and typeof(hero["stats"]) == TYPE_DICTIONARY
+	if not has_stats:
+		# Legacy MVP hero — traits-only is allowed
+		out["warnings"].append("no stats (legacy MVP)")
+		return out
+	var s: Dictionary = hero["stats"] as Dictionary
+	# hp / max_hp
+	var hp_i: int = int(s.get("hp", 0))
+	var max_hp_i: int = int(s.get("max_hp", hp_i))
+	if max_hp_i < 1:
+		out["ok"] = false
+		out["warnings"].append("max_hp < 1")
+	if hp_i > max_hp_i:
+		out["fixes"].append("hp (%d) > max_hp (%d) — will be clamped by HeroesIO.unpack" % [hp_i, max_hp_i])
+	# Optional combat keys — just check type, don't fail
+	var opt_keys: Array[String] = [
+		EchoConstants.STAT_ATK,
+		EchoConstants.STAT_DEF,
+		EchoConstants.STAT_AGI,
+		EchoConstants.STAT_CHA,
+		EchoConstants.STAT_INT,
+		EchoConstants.STAT_ACC,
+		EchoConstants.STAT_EVA,
+		EchoConstants.STAT_CRIT,
+		EchoConstants.STAT_MORALE,
+		EchoConstants.STAT_FEAR,
+	]
+	for k in opt_keys:
+		if s.has(k) and typeof(s[k]) != TYPE_INT:
+			out["warnings"].append("stat '%s' is not int" % k)
+	return out
