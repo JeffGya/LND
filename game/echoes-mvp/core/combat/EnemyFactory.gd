@@ -11,16 +11,18 @@
 # -----------------------------------------------------------------------------
 class_name EnemyFactory
 
+const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
+
 ## MVP baseline stats for dummy enemies. Easy to read in logs.
 const DUMMY_BASE := {
 	"rank": 1,
-	"hp": 40,       # hp == max_hp at spawn (training target)
-	"max_hp": 40,
-	"atk": 8,       # chips vs early hero DEF (no one-shots)
-	"def": 4,       # reduces early hero ATK to ~30–60 dmg
-	"agi": 5,       # sometimes ahead of slower heroes
-	"morale": 50,
-	"fear": 0,
+	"hp": HeroBal.TRAINING_HP,
+	"max_hp": HeroBal.TRAINING_MAX_HP,
+	"atk": HeroBal.TRAINING_ATK,
+	"def": HeroBal.TRAINING_DEF,
+	"agi": HeroBal.TRAINING_AGI,
+	"morale": HeroBal.TRAINING_MORALE,
+	"fear": HeroBal.TRAINING_FEAR,
 }
 
 ## Generates a deterministic array of dummy enemies for testing the round loop.

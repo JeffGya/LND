@@ -18,7 +18,10 @@
 #  - §9 Determinism: same seed + same inputs ⇒ identical snapshots.
 #  - §12 Gentle pacing: fear tick + morale decay applied as global round ticks.
 # -----------------------------------------------------------------------------
+
 class_name CombatEngine
+
+const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
 
 # --- Engine state -------------------------------------------------------------
 var _state: Dictionary = {}
@@ -274,9 +277,9 @@ func _normalize_allies(allies: Array) -> Array[Dictionary]:
 				if not d_in.has("id"): d_in["id"] = 0
 				var d_out: Dictionary = d_in
 				if not d_out.has("stats") or typeof(d_out["stats"]) != TYPE_DICTIONARY:
-					d_out["stats"] = _fallback_stats()
+					d_out["stats"] = _fallback_stats_from_balance()
 				else:
-					d_out["stats"] = _fill_missing_stats(d_out["stats"])
+					d_out["stats"] = _fill_missing_stats_with_balance(d_out["stats"])
 				if not d_out.has("fear"): d_out["fear"] = 0
 				if not d_out.has("status"): d_out["status"] = "idle"
 				out.append(d_out)
@@ -313,29 +316,29 @@ func _normalize_enemies(enemies: Array[Dictionary]) -> Array[Dictionary]:
 
 		# Write/ensure canonical stats, preferring provided values
 		if flat_hp_set:
-			_ensure_stat_int(s, EchoConstants.STAT_HP, int(e.get("hp", 10)))
+			_ensure_stat_int(s, EchoConstants.STAT_HP, int(e.get("hp", HeroBal.FALLBACK_HP)))
 		else:
-			_ensure_stat_int(s, EchoConstants.STAT_HP, 10)
+			_ensure_stat_int(s, EchoConstants.STAT_HP, HeroBal.FALLBACK_HP)
 
 		if flat_max_hp_set:
-			_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(e.get("max_hp", int(s.get(EchoConstants.STAT_HP, 10)))))
+			_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(e.get("max_hp", int(s.get(EchoConstants.STAT_HP, HeroBal.FALLBACK_HP)))))
 		else:
-			_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(s.get(EchoConstants.STAT_HP, 10)))
+			_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(s.get(EchoConstants.STAT_HP, HeroBal.FALLBACK_HP)))
 
 		if flat_atk_set:
-			_ensure_stat_int(s, EchoConstants.STAT_ATK, int(e.get("atk", 3)))
+			_ensure_stat_int(s, EchoConstants.STAT_ATK, int(e.get("atk", HeroBal.FALLBACK_ATK)))
 		else:
-			_ensure_stat_int(s, EchoConstants.STAT_ATK, 3)
+			_ensure_stat_int(s, EchoConstants.STAT_ATK, HeroBal.FALLBACK_ATK)
 
 		if flat_def_set:
-			_ensure_stat_int(s, EchoConstants.STAT_DEF, int(e.get("def", 0)))
+			_ensure_stat_int(s, EchoConstants.STAT_DEF, int(e.get("def", HeroBal.FALLBACK_DEF)))
 		else:
-			_ensure_stat_int(s, EchoConstants.STAT_DEF, 0)
+			_ensure_stat_int(s, EchoConstants.STAT_DEF, HeroBal.FALLBACK_DEF)
 
 		if flat_agi_set:
-			_ensure_stat_int(s, EchoConstants.STAT_AGI, int(e.get("agi", 5)))
+			_ensure_stat_int(s, EchoConstants.STAT_AGI, int(e.get("agi", HeroBal.FALLBACK_AGI)))
 		else:
-			_ensure_stat_int(s, EchoConstants.STAT_AGI, 5)
+			_ensure_stat_int(s, EchoConstants.STAT_AGI, HeroBal.FALLBACK_AGI)
 
 		if flat_cha_set:
 			_ensure_stat_int(s, EchoConstants.STAT_CHA, int(e.get("cha", 0)))
@@ -363,7 +366,7 @@ func _normalize_enemies(enemies: Array[Dictionary]) -> Array[Dictionary]:
 			_ensure_stat_int(s, EchoConstants.STAT_CRIT, 0)
 
 		# Morale/Fear (enemies ignore morale in MVP but keep a neutral value for shape)
-		_ensure_stat_int(s, EchoConstants.STAT_MORALE, 50)
+		_ensure_stat_int(s, EchoConstants.STAT_MORALE, HeroBal.FALLBACK_MORALE)
 		_ensure_stat_int(s, EchoConstants.STAT_FEAR, int(e.get("fear", 0)))
 
 		# Save back canonical stats
@@ -371,15 +374,15 @@ func _normalize_enemies(enemies: Array[Dictionary]) -> Array[Dictionary]:
 
 		# Backfill flat keys from stats when missing (compat with any legacy readers)
 		if not flat_hp_set:
-			e["hp"] = int(s.get(EchoConstants.STAT_HP, 10))
+			e["hp"] = int(s.get(EchoConstants.STAT_HP, HeroBal.FALLBACK_HP))
 		if not flat_max_hp_set:
-			e["max_hp"] = int(s.get(EchoConstants.STAT_MAX_HP, e.get("hp", 10)))
+			e["max_hp"] = int(s.get(EchoConstants.STAT_MAX_HP, e.get("hp", HeroBal.FALLBACK_HP)))
 		if not flat_atk_set:
-			e["atk"] = int(s.get(EchoConstants.STAT_ATK, 3))
+			e["atk"] = int(s.get(EchoConstants.STAT_ATK, HeroBal.FALLBACK_ATK))
 		if not flat_def_set:
-			e["def"] = int(s.get(EchoConstants.STAT_DEF, 0))
+			e["def"] = int(s.get(EchoConstants.STAT_DEF, HeroBal.FALLBACK_DEF))
 		if not flat_agi_set:
-			e["agi"] = int(s.get(EchoConstants.STAT_AGI, 5))
+			e["agi"] = int(s.get(EchoConstants.STAT_AGI, HeroBal.FALLBACK_AGI))
 		if not e.has("fear"):
 			e["fear"] = int(s.get(EchoConstants.STAT_FEAR, 0))
 		if not e.has("status"):
@@ -428,19 +431,51 @@ static func _to_combat_entity(hero: Dictionary, fallback_id: int) -> Dictionary:
 static func _fallback_stats() -> Dictionary:
 	# Safe typed defaults for when hero has no stats (older saves or bad data).
 	return {
-		EchoConstants.STAT_HP: 1,
-		EchoConstants.STAT_MAX_HP: 1,
-		EchoConstants.STAT_ATK: 0,
-		EchoConstants.STAT_DEF: 0,
-		EchoConstants.STAT_AGI: 0,
+		EchoConstants.STAT_HP: HeroBal.FALLBACK_HP,
+		EchoConstants.STAT_MAX_HP: HeroBal.FALLBACK_HP,
+		EchoConstants.STAT_ATK: HeroBal.FALLBACK_ATK,
+		EchoConstants.STAT_DEF: HeroBal.FALLBACK_DEF,
+		EchoConstants.STAT_AGI: HeroBal.FALLBACK_AGI,
 		EchoConstants.STAT_CHA: 0,
 		EchoConstants.STAT_INT: 0,
 		EchoConstants.STAT_ACC: 0,
 		EchoConstants.STAT_EVA: 0,
 		EchoConstants.STAT_CRIT: 0,
-		EchoConstants.STAT_MORALE: 50,
+		EchoConstants.STAT_MORALE: HeroBal.FALLBACK_MORALE,
 		EchoConstants.STAT_FEAR: 0,
 	}
+
+static func _fallback_stats_from_balance() -> Dictionary:
+	return {
+		EchoConstants.STAT_HP: HeroBal.FALLBACK_HP,
+		EchoConstants.STAT_MAX_HP: HeroBal.FALLBACK_HP,
+		EchoConstants.STAT_ATK: HeroBal.FALLBACK_ATK,
+		EchoConstants.STAT_DEF: HeroBal.FALLBACK_DEF,
+		EchoConstants.STAT_AGI: HeroBal.FALLBACK_AGI,
+		EchoConstants.STAT_CHA: 0,
+		EchoConstants.STAT_INT: 0,
+		EchoConstants.STAT_ACC: 0,
+		EchoConstants.STAT_EVA: 0,
+		EchoConstants.STAT_CRIT: 0,
+		EchoConstants.STAT_MORALE: HeroBal.FALLBACK_MORALE,
+		EchoConstants.STAT_FEAR: 0,
+	}
+
+static func _fill_missing_stats_with_balance(stats_in: Dictionary) -> Dictionary:
+	var s: Dictionary = stats_in.duplicate(true)
+	_ensure_stat_int(s, EchoConstants.STAT_HP, HeroBal.FALLBACK_HP)
+	_ensure_stat_int(s, EchoConstants.STAT_MAX_HP, int(s.get(EchoConstants.STAT_HP, HeroBal.FALLBACK_HP)))
+	_ensure_stat_int(s, EchoConstants.STAT_ATK, HeroBal.FALLBACK_ATK)
+	_ensure_stat_int(s, EchoConstants.STAT_DEF, HeroBal.FALLBACK_DEF)
+	_ensure_stat_int(s, EchoConstants.STAT_AGI, HeroBal.FALLBACK_AGI)
+	_ensure_stat_int(s, EchoConstants.STAT_CHA, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_INT, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_ACC, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_EVA, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_CRIT, 0)
+	_ensure_stat_int(s, EchoConstants.STAT_MORALE, HeroBal.FALLBACK_MORALE)
+	_ensure_stat_int(s, EchoConstants.STAT_FEAR, 0)
+	return s
 
 static func _fill_missing_stats(stats_in: Dictionary) -> Dictionary:
 	# Ensure all canonical keys exist and are ints; do not change provided values.
@@ -666,14 +701,14 @@ func _pick_lowest_hp_ratio(group: Array[Dictionary]) -> Dictionary:
 		var id_val := int(a.get("id", -1))
 		if id_val < 0:
 			continue
-		var hp := 10
-		var max_hp := 10
+		var hp := HeroBal.FALLBACK_HP
+		var max_hp := HeroBal.FALLBACK_HP
 		if a.has("stats") and typeof(a.stats) == TYPE_DICTIONARY:
-			hp = int(a.stats.get("hp", 10))
-			max_hp = int(a.stats.get("max_hp", 10))
+			hp = int(a.stats.get("hp", HeroBal.FALLBACK_HP))
+			max_hp = int(a.stats.get("max_hp", HeroBal.FALLBACK_HP))
 		else:
-			hp = int(a.get("hp", 10))
-			max_hp = int(a.get("max_hp", 10))
+			hp = int(a.get("hp", HeroBal.FALLBACK_HP))
+			max_hp = int(a.get("max_hp", HeroBal.FALLBACK_HP))
 		var ratio := float(hp) / float(max(1, max_hp))
 		var cand := {"id": id_val, "hp_ratio": ratio}
 		if best.size() == 0:
@@ -694,7 +729,7 @@ func _pick_weakest(group: Array[Dictionary]) -> Dictionary:
 		var id_val := int(e.get("id", -1))
 		if id_val < 0:
 			continue
-		var hp := 10
+		var hp := HeroBal.FALLBACK_HP
 		if e.has("stats") and typeof(e.stats) == TYPE_DICTIONARY and e.stats.has("hp"):
 			hp = int(e.stats.hp)
 		elif e.has("hp"):

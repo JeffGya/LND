@@ -30,6 +30,8 @@ const Seedbook = preload("res://core/seed/SeedBook.gd")
 const AseTickService = preload("res://core/economy/AseTickService.gd")
 const EconomyServiceScript = preload("res://core/services/EconomyService.gd")
 const SummonServiceScript = preload("res://core/services/SummonService.gd")
+const GameBalance_EconomySanctum = preload("res://core/config/GameBalance_EconomySanctum.gd")
+const GameBalance_Debug = preload("res://core/config/GameBalance_Debug.gd")
 const EchoConstants = preload("res://core/echoes/EchoConstants.gd")
 const PersonalityArchetype = preload("res://core/echoes/PersonalityArchetype.gd")
 const ArchetypeBarks = preload("res://core/echoes/ArchetypeBarks.gd")
@@ -166,15 +168,27 @@ func _register_default_commands() -> void:
 	_commands["/summon"] = func(args: Array) -> int:
 		# Usage: /summon [count:int>=1]
 		var n: int = 1
-		if args.size() > 0:
+		# Prefer debug-configured batch when no args are given
+		if args.size() == 0:
+			if typeof(GameBalance_Debug) == TYPE_OBJECT:
+				n = int(GameBalance_Debug.DEBUG_SUMMON_BATCH)
+			else:
+				n = 1
+		else:
 			var s := String(args[0])
 			if not s.is_valid_int():
 				_print_line("Usage: /summon [count:int>=1]")
 				return 1
 			n = int(s)
-			if n < 1:
-				_print_line("Count must be >= 1")
-				return 1
+		# Hard cap to avoid accidental spam
+		if typeof(GameBalance_Debug) == TYPE_OBJECT:
+			n = clampi(n, 1, int(GameBalance_Debug.DEBUG_MAX_SUMMON_BATCH))
+		else:
+			n = max(1, n)
+		# Read the configured summon cost from GameBalance_EconomySanctum
+		var cfg_cost: int = 0
+		if typeof(GameBalance_EconomySanctum) == TYPE_OBJECT and GameBalance_EconomySanctum.SUMMON_COST_BASE > 0:
+			cfg_cost = int(GameBalance_EconomySanctum.SUMMON_COST_BASE)
 		var res: Dictionary = SummonServiceScript.summon(n)
 		if not bool(res.get("ok", false)):
 			var reason := String(res.get("reason", ""))
@@ -183,7 +197,10 @@ func _register_default_commands() -> void:
 					var have := int(res.get("have", 0))
 					var cost := int(res.get("cost", 0))
 					var need := int(res.get("need", max(0, cost - have)))
-					_print_line("[summon] FAILED — Insufficient Ase (have=%d, need=%d, cost=%d)" % [have, need, cost])
+					if cfg_cost > 0:
+						_print_line("[summon] FAILED — Insufficient Ase (have=%d, need=%d, cost=%d, cfg=%d)" % [have, need, cost, cfg_cost])
+					else:
+						_print_line("[summon] FAILED — Insufficient Ase (have=%d, need=%d, cost=%d)" % [have, need, cost])
 					return 2
 				"bad_count":
 					_print_line("[summon] FAILED — bad count (must be >= 1)")
@@ -210,6 +227,16 @@ func _register_default_commands() -> void:
 			var bark_line := ArchetypeBarks.arrival(bark_arch, bark_name)
 			if bark_line != "":
 				_print_line("  " + "“%s”" % bark_line)
+		return 0
+
+	# /summon_cost debug command: print the configured summon cost from GameBalance_EconomySanctum
+	_commands["/summon_cost"] = func(_args: Array) -> int:
+		var cost := 0
+		if typeof(GameBalance_EconomySanctum) == TYPE_OBJECT and GameBalance_EconomySanctum.has("SUMMON_COST_BASE"):
+			cost = int(GameBalance_EconomySanctum.SUMMON_COST_BASE)
+			_print_line("[summon_cost] current configured summon cost = %d Ase" % cost)
+		else:
+			_print_line("[summon_cost] balance file not loaded or missing SUMMON_COST_BASE")
 		return 0
 
 	_commands["/list_heroes"] = func(args: Array) -> int:
@@ -567,17 +594,24 @@ func _register_default_commands() -> void:
 	# --- Economy dev/cheat commands -----------------------------------------
 	# Instantly add banked Ase (whole units)
 	_commands["/give_ase"] = func(args: Array) -> int:
+		var amt: int = 0
 		if args.size() == 0:
-			_print_line("Usage: /give_ase <amount:int>")
-			return 1
-		var s := String(args[0])
-		if not s.is_valid_int():
-			_print_line("/give_ase expects a positive integer amount")
-			return 1
-		var amt: int = int(s)
+			if typeof(GameBalance_Debug) == TYPE_OBJECT:
+				amt = int(GameBalance_Debug.DEBUG_GIVE_ASE_AMOUNT)
+			else:
+				_print_line("Usage: /give_ase <amount:int>")
+				return 1
+		else:
+			var s := String(args[0])
+			if not s.is_valid_int():
+				_print_line("/give_ase expects a positive integer amount")
+				return 1
+			amt = int(s)
 		if amt <= 0:
 			_print_line("Amount must be a positive integer")
 			return 1
+		if typeof(GameBalance_Debug) == TYPE_OBJECT:
+			amt = min(amt, int(GameBalance_Debug.DEBUG_MAX_GIVE_ASE))
 		var after_banked: int = EconomyServiceScript.deposit_ase(amt)
 		var eff: float = float(EconomyServiceScript.get_ase_effective())
 		_print_line("[give_ase] +%d → banked=%d, effective=%.2f" % [amt, after_banked, eff])
@@ -1015,6 +1049,8 @@ func _register_default_commands() -> void:
 		# Usage: /fight_demo [seed] [rounds=5] [--auto]
 		var seed_text: String = ""
 		var rounds: int = 5
+		if typeof(GameBalance_Debug) == TYPE_OBJECT:
+			rounds = int(GameBalance_Debug.DEBUG_FIGHT_ROUNDS)
 		var use_auto: bool = false
 		if args.size() > 0:
 			seed_text = String(args[0])
@@ -1052,7 +1088,10 @@ func _register_default_commands() -> void:
 			return 2
 
 		# Enemies and engine
-		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(3, int(seed_val))
+		var enemy_count: int = 3
+		if typeof(GameBalance_Debug) == TYPE_OBJECT:
+			enemy_count = int(GameBalance_Debug.DEBUG_ENEMY_COUNT)
+		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(enemy_count, int(seed_val))
 		var eng := CombatEngine.new()
 		_current_eng = eng
 		# Apply persisted morale overrides before starting the battle so they're seeded into state
@@ -1072,7 +1111,7 @@ func _register_default_commands() -> void:
 			"seed": int(seed_val),
 			"rounds": rounds,
 			"party_ids": party_ids,
-			"enemy_count": 3,
+			"enemy_count": enemy_count,
 		}
 		return 0
 
@@ -1084,6 +1123,8 @@ func _register_default_commands() -> void:
 		var rounds: int = int(_last_fight.get("rounds", 5))
 		var party_ids: Array[int] = _last_fight.get("party_ids", [])
 		var enemy_count: int = int(_last_fight.get("enemy_count", 3))
+		if enemy_count <= 0 and typeof(GameBalance_Debug) == TYPE_OBJECT:
+			enemy_count = int(GameBalance_Debug.DEBUG_ENEMY_COUNT)
 		var enemies: Array[Dictionary] = EnemyFactory.spawn_dummy_pack(enemy_count, seed_v)
 		var eng := CombatEngine.new()
 		_current_eng = eng

@@ -9,14 +9,22 @@ class_name SummonService
 ##   • Determinism lives in EchoFactory; we just provide seed/indices in order.
 ##   • Side-effect safety: On failure (insufficient Ase / debit failed), no roster changes.
 
+const EconBal = preload("res://core/config/GameBalance_EconomySanctum.gd")
+
 # --------------
 # Public API
 # --------------
 static func summon_cost() -> int:
-	return EconomyConstants.ASE_SUMMON_COST
+	# Prefer centralized balance file; fall back to EconomyConstants for legacy saves
+	var base_cost: int = EconBal.SUMMON_BASE_COST_ASE
+	if base_cost <= 0:
+		return EconomyConstants.ASE_SUMMON_COST
+	return base_cost
 
 static func can_afford(count: int = 1) -> Dictionary:
 	var c: int = max(1, count)
+	if c > EconBal.SUMMON_MAX_PER_ACTION:
+		c = EconBal.SUMMON_MAX_PER_ACTION
 	var unit: int = summon_cost()
 	var cost: int = unit * c
 	var have: int = 0
@@ -35,9 +43,13 @@ static func summon(count: int = 1) -> Dictionary:
 	# Validate request
 	if count < 1:
 		return {"ok": false, "reason": "bad_count", "have": 0, "cost": 0, "need": 0}
+	if count > EconBal.SUMMON_MAX_PER_ACTION:
+		count = EconBal.SUMMON_MAX_PER_ACTION
 
 	var unit: int = summon_cost()
 	var total_cost: int = unit * count
+	if count > 1 and EconBal.SUMMON_COST_PER_EXTRA > 0:
+		total_cost += (count - 1) * EconBal.SUMMON_COST_PER_EXTRA
 
 	# Balance check
 	var have: int = int(EconomyService.get_ase_banked())

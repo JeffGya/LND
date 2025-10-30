@@ -3,7 +3,10 @@
 # Applies Major/Minor combat actions to the shared battle context.
 # Pure rule engine: no RNG, no IO. Deterministic given (action, ctx) inputs.
 # -----------------------------------------------------------------------------
+
 class_name ActionResolver
+
+const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
 
 # -- Public API ---------------------------------------------------------------
 ## Applies a Major action (ATTACK, REFUSE) to the context.
@@ -51,7 +54,7 @@ static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 		}
 
 	# Read attacker stats with gentle defaults (plus temp debug boost from ctx)
-	var atk: int = _read_stat(actor, ["stats", "atk"], int(actor.get("atk", 3)))
+	var atk: int = _read_stat(actor, ["stats", "atk"], int(actor.get("atk", HeroBal.FALLBACK_ATK)))
 	var atk_boost: int = 0
 	if typeof(ctx) == TYPE_DICTIONARY and ctx.has("temp_atk_boost") and typeof(ctx["temp_atk_boost"]) == TYPE_DICTIONARY:
 		var tb: Dictionary = ctx["temp_atk_boost"]
@@ -62,20 +65,20 @@ static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 	var morale: int = _read_morale_for(actor)
 
 	# Read defender stats with gentle defaults
-	var def: int = _read_stat(target, ["stats", "def"], int(target.get("def", 0)))
-	var hp: int = _read_stat(target, ["stats", "hp"], int(target.get("hp", 10)))
-	var max_hp: int = _read_stat(target, ["stats", "max_hp"], int(target.get("max_hp", max(10, hp))))
+	var def: int = _read_stat(target, ["stats", "def"], int(target.get("def", HeroBal.FALLBACK_DEF)))
+	var hp: int = _read_stat(target, ["stats", "hp"], int(target.get("hp", HeroBal.FALLBACK_HP)))
+	var max_hp: int = _read_stat(target, ["stats", "max_hp"], int(target.get("max_hp", max(HeroBal.FALLBACK_HP, hp))))
 
 	# Compute base damage per MVP: deterministic and transparent
 	# Base = max(1, ATK - DEF). Morale and Guard are applied later per current rules.
-	var dmg: int = max(1, atk - def)
+	var dmg: int = max(HeroBal.MIN_DAMAGE, atk - def)
 	var base_dmg: int = dmg # keep a copy for guard delta calculations
 
 	# Guard interaction: one-shot shield halves final damage (floor), then consumes 1
 	var guard_shield: int = int(target.get("guard_shield", 0))
 	var guarded: bool = false
 	if guard_shield > 0 and dmg > 0:
-		dmg = int(floor(float(dmg) * 0.5))
+		dmg = int(floor(float(dmg) * HeroBal.GUARD_DAMAGE_MULT))
 		guard_shield -= 1
 		target["guard_shield"] = guard_shield
 		guarded = true

@@ -1,6 +1,8 @@
 extends Node
 class_name EconomyService
 
+const EconBal = preload("res://core/config/GameBalance_EconomySanctum.gd")
+
 ## EconomyService — deterministic Ase↔Ekwan conversion façade
 ## Canon: fixed-rate batches (v1), integer-only, no negatives.
 ## Depends on: SaveService, EconomyConstants
@@ -9,7 +11,15 @@ class_name EconomyService
 # Private helpers
 # -------------------------------------------------------------
 static func _get_rate() -> int:
-	return int(EconomyConstants.ASE_PER_EKWAN)
+	return int(EconBal.EXCHANGE_ASE_TO_EKWAN_RATE)
+
+static func get_tick_config() -> Dictionary:
+	return {
+		"tick": EconBal.ASE_TICK_BASE,
+		"bank_pulse": EconBal.ASE_BANK_PULSE,
+		"min": EconBal.ASE_MIN,
+		"max": EconBal.ASE_MAX,
+	}
 
 static func _result_fail(reason: String, rate: int) -> Dictionary:
 	var d := {}
