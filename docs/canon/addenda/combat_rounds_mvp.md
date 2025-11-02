@@ -115,6 +115,99 @@ Enemies currently ignore morale in MVP.
 
 ---
 
+## 5.2 Fear-Driven Refusal (MVP Final)
+
+**Canon Link:** LND §4 Core Mechanics, §9 Combat, AI & Simulation (“Echo Behavior Matrix”), §12 Balance Curves  
+**Narrative Intent:** An echo that is too afraid does not always obey — the Keeper must see *why*.
+
+**Goal (story):** “As the Keeper I want fear to push refusal.”
+
+**What it does (runtime):**
+
+1. Every combatant tracks a `fear` value (0–100).  
+2. At the start of a turn, **before** normal action selection and **before** morale-based refusals, the engine asks `ActionResolver.should_refuse_turn(unit_dict)`.  
+3. If fear is **below** the configured threshold, the unit acts normally.  
+4. If fear is **at or above** the threshold, we roll a refusal chance that scales with how far above the threshold the unit is.  
+5. On success, we do **not** go through the normal attack path. Instead we emit a fear outcome:
+   - **"refuse"** → unit skips its major action  
+   - **"guard"** → unit takes a defensive minor action on self (reuses existing GUARD resolver)  
+   - **(post-MVP)** **"abandon"/"retreat"** → *not part of MVP combat loop; see below*  
+6. All fear refusals are **logged** so the Keeper can see what happened.
+
+**Balance source of truth:** `core/config/GameBalance_HeroCombat.gd`
+
+```gdscript
+const FEAR_REFUSAL_THRESHOLD: int = 70
+const FEAR_MAX: int = 100
+const FEAR_REFUSAL_BASE_CHANCE: float = 0.35
+const FEAR_REFUSAL_PER_10_OVER: float = 0.05
+const FEAR_REFUSAL_ACTIONS: Array[String] = [
+    "refuse",
+    "guard"
+    # "retreat"  # POST-MVP: uses its own high-severity trigger
+]
+
+# Fear gain sources (MVP)
+const FEAR_PER_HIT: int = 2
+const FEAR_PER_ALLY_KO: int = 4
+const FEAR_PER_FOCUS_HIT: int = 1
+```
+
+**Execution order (important):**
+
+1. Initiative determined  
+2. **Fear check** (new)  
+3. If fear → refusal: emit fear action, log, continue to next actor  
+4. Else: normal action selection (attack / guard / stub)  
+5. Morale tick & decay  
+6. Victory/defeat checks
+
+This preserves the canon directive **“Guidance > Control”**: the Keeper chose the team, but Anansi’s web (fear/morale) still speaks.
+
+**Files touched (MVP):**
+- `core/config/GameBalance_HeroCombat.gd` — added fear → refusal block and fear gain constants.
+- `core/combat/ActionResolver.gd` — new helper `static func should_refuse_turn(unit: Dictionary) -> Dictionary` that clamps fear, pulls the config, rolls, and picks a mode (`"refuse"`/`"guard"`).
+- `core/combat/CombatEngine.gd` — in the actor loop, we now call the resolver **before** normal actions and apply the outcome through `_apply_fear_outcome(...)`; also wires fear gain for “got hit”, “got hit multiple times (focus)”, and “ally KO” in the same round.
+- `core/combat/CombatLog.gd` — added `add_refusal(...)` and taught the formatter to show fear data:  
+  `REFUSE Kwamena Amponsah  (fear_refusal, fear=80)`
+- `core/ui/debug/debug_console.gd` — added `/fear_show` and `/fear_set <id> <0..100>` for QA; later extended to persist fear across demo fights.
+
+**Why we kept it deterministic:** the chance is computed from fear and a small roll inside the resolver, but the overall battle is still deterministic for a given seed because combat PRNG is already isolated for the round. Same seed ⇒ same fear events.
+
+**Fear gain (MVP):**
+- on **every hit**: +`FEAR_PER_HIT`
+- on **extra hits in the same round on the same target**: +`FEAR_PER_FOCUS_HIT`
+- on **ally KO this round**: every surviving ally +`FEAR_PER_ALLY_KO`
+- on **round tick**: existing `FEAR_PER_ROUND` still applies
+
+This ensures that 2–3 bad rounds are enough to reach the refusal threshold, which was the original Notion test goal (“At fear 70, refusal triggers in sample”).
+
+**QA Commands (debug_console):**
+
+- `/fear_show` → list current combat allies with their fear
+- `/fear_set 1 80` → force hero with id=1 to fear=80 (current fight + persisted for future demo fights)
+- `/fight_again` → re-run same fight, fear is re-applied
+
+**Persistence (MVP+ for tooling):**
+
+- Console keeps an in-memory `_fear_overrides_persist` map so that setting fear once applies to every new `/fight_demo` in the same session.
+- `SaveService.gd` gained `hero_set_fear(id, value)` so fear can be written into the actual save roster.
+- The demo fight builder now reapplies persisted fear onto the newly created combat state, so the “I was scared in the last fight” feeling can be demonstrated.
+
+**Post-MVP: High-severity Abandon / Retreat**
+
+During this user story we discovered that “retreat” should **not** be a casual outcome of normal fear refusal. Canonically, abandoning the party/sanctum is a *severe* act and must yield legacy value (see LND §10 “Loss as continuity”). Therefore:
+
+- MVP fear refusal only ever produces: **"refuse"** or **"guard"**.
+- **Abandon/retreat** is reserved for a **separate, higher-threshold trigger**, e.g.:
+  ```gdscript
+  const FEAR_ABANDON_THRESHOLD: int = 95
+  const FEAR_ABANDON_BASE_CHANCE: float = 0.35
+  ```
+- When triggered, combat should **signal** an abandon event (e.g. `notes: "fear_abandon_signal"`) but the *actual* removal from Sanctum / roster should be handled by the campaign/sanctum layer, not in combat.
+- This keeps combat MVP fair and readable, and keeps permanent loss tied to legacy recovery (Faith / Legacy Fragments) per canon §10.
+
+
 ## 6. Determinism Guarantees
 
 ✅ Identical seed ⇒ identical battle order, choices, and outcomes.  

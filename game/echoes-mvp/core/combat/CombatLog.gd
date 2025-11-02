@@ -112,6 +112,15 @@ static func _join_names(ids: Array, name_by_id: Dictionary) -> String:
 		parts.append(nm)
 	return String(", ").join(parts)
 
+## Explicit refusal line for fear-driven overrides
+## Example:
+##   REFUSAL: Korkor Kyerematen skipped turn (fear=78, mode=guard)
+func add_refusal(unit_name: String, fear: int, mode: String) -> void:
+	var m := mode
+	if m == "":
+		m = "refuse"
+	print("REFUSAL:", unit_name, "skipped turn (fear=", fear, ", mode=", m, ")")
+
 static func _format_action(a: Dictionary) -> String:
 	var t: int = int(a.get("type", -1))
 	var actor: int = int(a.get("actor_id", -1))
@@ -200,6 +209,10 @@ static func _format_action(a: Dictionary) -> String:
 			return "MOVE %s → %s  (advance)" % [actor_label, target_label_m]
 		CombatConstants.ActionType.REFUSE:
 			var notes_r: String = str(a.get("notes", "refuse"))
+			var fear_val: int = int(a.get("fear", -1))
+			var reason: String = str(a.get("reason", ""))
+			if reason == "fear" and fear_val >= 0:
+				return "REFUSE %s  (%s, fear=%d)" % [actor_label, notes_r, fear_val]
 			return "REFUSE %s  (%s)" % [actor_label, notes_r]
 		_:
 			return "? %s  (unsupported)" % actor_label

@@ -215,6 +215,52 @@ func heroes_list() -> Array:
 func hero_get(id: int) -> Dictionary:
 	return _heroes_io.get_hero_by_id(id)
 
+## Persistently set an individual hero's fear (0..100) in the hero_roster block.
+## Used by debug/QA commands so that the next combat picks up the same value.
+## We do it via pack_current()/unpack(...) because HeroesIO isn't exposed here
+## with a direct "update this hero" method.
+func hero_set_fear(id: int, value: int) -> int:
+	var clamped: int = clampi(value, 0, 100)
+
+	# Get full roster as it currently lives in memory
+	var roster: Dictionary = _heroes_io.pack_current()
+	var buckets: Array = ["active", "recovering", "retired", "fallen"]
+	var found: bool = false
+
+	for b in buckets:
+		var arr: Array = roster.get(b, []) as Array
+		for i in range(arr.size()):
+			var h_v : Dictionary = arr[i]
+			if typeof(h_v) != TYPE_DICTIONARY:
+				continue
+			var h: Dictionary = h_v as Dictionary
+			if int(h.get("id", -1)) != id:
+				continue
+
+			# 1) flat field
+			h["fear"] = clamped
+
+			# 2) nested stats (to keep shape the same as combat expects)
+			var hstats: Dictionary = h.get("stats", {}) as Dictionary
+			if typeof(hstats) != TYPE_DICTIONARY:
+				hstats = {}
+			hstats["fear"] = clamped
+			h["stats"] = hstats
+
+			# write back into bucket
+			arr[i] = h
+			roster[b] = arr
+			found = true
+			break
+		if found:
+			break
+
+	# Only unpack if we actually changed something
+	if found:
+		_heroes_io.unpack(roster)
+
+	return clamped
+
 ## Expose the campaign seed as an int for deterministic factories (used by SummonService)
 func get_campaign_seed() -> int:
 	var cr: Dictionary = CampaignRunIO.pack_current()

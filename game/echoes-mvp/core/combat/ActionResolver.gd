@@ -6,7 +6,76 @@
 
 class_name ActionResolver
 
+
 const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
+
+# ---------------------------------------------------------
+# Fear-driven refusal check (MVP)
+# Called by CombatEngine BEFORE normal action selection.
+# Uses central values from GameBalance_HeroCombat.gd.
+# If fear < threshold → always returns refuse=false.
+# If fear >= threshold → rolls a chance to override the turn.
+# Returns a dictionary so we can log the exact reason/mode.
+# MVP: only "refuse" and "guard" are produced; "retreat/abandon" is post-MVP and uses its own trigger.
+# NOTE: This function is intentionally non-deterministic right now
+# (uses randf()). For seeded/deterministic runs, pass in your own
+# RNG later or replace randf() with a battle-seeded generator.
+# ---------------------------------------------------------
+static func should_refuse_turn(unit: Dictionary) -> Dictionary:
+	# 1) read/clamp fear
+	var fear_val: int = int(unit.get("fear", 0))
+	var fear_clamped: int = clamp(fear_val, 0, HeroBal.FEAR_MAX)
+
+	# 2) early exit when not scared enough
+	if fear_clamped < HeroBal.FEAR_REFUSAL_THRESHOLD:
+		return {
+			"refuse": false,
+			"mode": "",
+			"reason": "",
+			"fear": fear_clamped,
+		}
+
+	# 3) compute refusal chance from config
+	var over: int = fear_clamped - HeroBal.FEAR_REFUSAL_THRESHOLD
+	var steps: int = over / 10
+	var chance: float = HeroBal.FEAR_REFUSAL_BASE_CHANCE + float(steps) * HeroBal.FEAR_REFUSAL_PER_10_OVER
+	if chance > 0.95:
+		chance = 0.95
+
+	# 4) roll
+	var roll: float = randf()
+	if roll > chance:
+		# fear was high, but the hero held it together this turn
+		return {
+			"refuse": false,
+			"mode": "",
+			"reason": "",
+			"fear": fear_clamped,
+			"roll": roll,
+			"chance": chance,
+		}
+
+	# 5) pick mode (MVP, 2-way: refuse/guard)
+	# We still respect the configured action names from HeroBal.FEAR_REFUSAL_ACTIONS
+	var mode_roll: float = randf()
+	var mode: String = "refuse"
+	if mode_roll <= 0.6:
+		mode = "refuse"
+	else:
+		mode = "guard"
+
+	# sanity: if the config removed a mode, fall back to "refuse"
+	if not HeroBal.FEAR_REFUSAL_ACTIONS.has(mode):
+		mode = "refuse"
+
+	return {
+		"refuse": true,
+		"mode": mode,
+		"reason": "fear",
+		"fear": fear_clamped,
+		"roll": roll,
+		"chance": chance,
+	}
 
 # -- Public API ---------------------------------------------------------------
 ## Applies a Major action (ATTACK, REFUSE) to the context.
@@ -313,3 +382,24 @@ static func _unsupported(action: Dictionary, phase: String) -> Dictionary:
 		"target_id": int(action.get("target_id", -1)),
 		"notes": "unsupported_" + phase,
 	}
+
+# ---------------------------------------------------------------------
+# Debug / QA helpers
+# Run from the console / test harness to see fear-refusal behavior.
+# This does NOT run automatically in production code.
+# Example:
+#   ActionResolver.test_fear_refusal_samples()
+# ---------------------------------------------------------------------
+static func test_fear_refusal_samples() -> void:
+	var samples := [
+		{"label": "low (50)", "unit": {"id": 1, "name": "Test A", "fear": 50}},
+		{"label": "threshold (70)", "unit": {"id": 2, "name": "Test B", "fear": HeroBal.FEAR_REFUSAL_THRESHOLD}},
+		{"label": "high (90)", "unit": {"id": 3, "name": "Test C", "fear": 90}},
+	]
+	for s in samples:
+		var lb := String(s["label"])
+		var u := s["unit"] as Dictionary
+		print("--- ", lb, " ---")
+		for i in range(5):
+			var res := should_refuse_turn(u)
+			print("  roll #", i, " -> ", res)

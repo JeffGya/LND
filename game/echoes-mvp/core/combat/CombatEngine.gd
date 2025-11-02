@@ -74,11 +74,25 @@ func step_round() -> Dictionary:
 
 	# 2) SELECT + 3) RESOLVE ----------------------------------------------------
 	var actions: Array[Dictionary] = []
+	var focus_hits: Dictionary = {}  # target_id -> number of times hit this round
 	for actor_id in order:
 		var ent: Variant = _find_entity(actor_id)
 		if ent == null:
 			continue
 		if not _entity_alive(ent):
+			continue
+
+		# Fear-first refusal check (MVP)
+		# We do this BEFORE normal action selection so that fear can override
+		# even when morale is still STEADY. ActionResolver pulls values from
+		# GameBalance_HeroCombat.gd so we don't hardcode thresholds here.
+		var fear_check: Dictionary = ActionResolver.should_refuse_turn(ent as Dictionary)
+		if bool(fear_check.get("refuse", false)):
+			var fear_effect: Dictionary = _apply_fear_outcome(fear_check, ent as Dictionary, ctx)
+			# Decorate effect with names just like normal actions so logs stay consistent
+			var actor_name_fc: String = str(name_by_id.get(actor_id, str(actor_id)))
+			fear_effect["actor_name"] = actor_name_fc
+			actions.append(fear_effect)
 			continue
 
 		# Build latest ctx (mutated state is shared across loop iterations)
@@ -160,7 +174,25 @@ func step_round() -> Dictionary:
 				if not effect.has("morale_mult"):
 					effect["morale_mult"] = 1.0
 
+		# Fear accrual from impactful events (MVP)
+		# If this action actually hit a target, increase that target's fear.
+		# We look for an ATTACK effect with a target_id and ok=true.
+		if eff_type == CombatConstants.ActionType.ATTACK and effect.get("ok", true):
+			var tid2: int = int(effect.get("target_id", -1))
+			if tid2 >= 0:
+				# track focus hits in this round
+				var prev_hits: int = int(focus_hits.get(tid2, 0))
+				var extra_focus: int = 0
+				if prev_hits > 0:
+					extra_focus = HeroBal.FEAR_PER_FOCUS_HIT
+				# apply to the actual entity so the next turn sees the higher fear
+				_increase_fear_on_entity(tid2, HeroBal.FEAR_PER_HIT + extra_focus)
+				# store back hit count
+				focus_hits[tid2] = prev_hits + 1
 		actions.append(effect)
+
+	# After all actions, apply KO shock to surviving allies
+	_apply_fear_from_ally_ko()
 
 	# Capture current HP and guard states for readable per-round summaries
 	var state_after: Dictionary = {"allies": [], "enemies": []}
@@ -240,6 +272,49 @@ func get_state() -> Dictionary:
 	return _state.duplicate(true)
 
 # --- Internal helpers --------------------------------------------------------
+
+
+#
+# Applies the outcome chosen by ActionResolver.should_refuse_turn(...)
+# MVP: only "refuse" and "guard" are supported here. "retreat/abandon" is post-MVP
+# and should be triggered by a separate, higher-severity fear check.
+# Returns an effect dictionary shaped like other combat actions so the
+# caller can append it to the round actions list.
+func _apply_fear_outcome(fear_res: Dictionary, ent: Dictionary, ctx: Dictionary) -> Dictionary:
+	var mode: String = String(fear_res.get("mode", "refuse"))
+	var actor_id: int = int(ent.get("id", -1))
+	if actor_id < 0:
+		return {
+			"ok": false,
+			"type": CombatConstants.ActionType.REFUSE,
+			"actor_id": actor_id,
+			"notes": "fear_invalid_actor",
+		}
+
+	match mode:
+		"guard":
+			# Reuse existing guard resolver so we don't create a parallel system
+			var guard_action: Dictionary = {
+				"type": CombatConstants.ActionType.GUARD,
+				"actor_id": actor_id,
+				"target_id": actor_id,
+				"notes": "fear_guard",
+			}
+			var guard_eff: Dictionary = ActionResolver.apply_minor(guard_action, ctx)
+			guard_eff["reason"] = "fear"
+			guard_eff["fear"] = int(fear_res.get("fear", 0))
+			return guard_eff
+		_:
+			# Default/refuse path
+			var refuse_action: Dictionary = {
+				"type": CombatConstants.ActionType.REFUSE,
+				"actor_id": actor_id,
+				"notes": "fear_refusal",
+			}
+			var refuse_eff: Dictionary = ActionResolver.apply_major(refuse_action, ctx)
+			refuse_eff["reason"] = "fear"
+			refuse_eff["fear"] = int(fear_res.get("fear", 0))
+			return refuse_eff
 
 # Returns a clamped morale (0..100). Allies have real morale; enemies return a steady baseline.
 func _get_morale(ent: Dictionary) -> int:
@@ -862,3 +937,38 @@ static func _cmp_hp_asc_id_asc(a: Dictionary, b: Dictionary) -> bool:
 static func _ensure_stat_int(s: Dictionary, k: String, v: int) -> void:
 	if not s.has(k) or typeof(s[k]) != TYPE_INT:
 		s[k] = int(v)
+
+# Increase fear on a specific entity by id, clamping to config max.
+func _increase_fear_on_entity(ent_id: int, amount: int) -> void:
+	if amount <= 0:
+		return
+	var ent: Variant = _find_entity(ent_id)
+	if ent == null or typeof(ent) != TYPE_DICTIONARY:
+		return
+	var fear_cur: int = int((ent as Dictionary).get("fear", 0))
+	var fear_new: int = min(HeroBal.FEAR_MAX, max(0, fear_cur + amount))
+	(ent as Dictionary)["fear"] = fear_new
+	# Also mirror into stats if present so shape stays consistent
+	if (ent as Dictionary).has("stats") and typeof((ent as Dictionary).stats) == TYPE_DICTIONARY:
+		((ent as Dictionary).stats as Dictionary)[EchoConstants.STAT_FEAR] = fear_new
+
+# Apply KO shock: when an ally goes down during this round, surviving allies
+# gain FEAR_PER_ALLY_KO. This scans the live state and compares hp/status.
+func _apply_fear_from_ally_ko() -> void:
+	# Collect KO allies
+	var ko_allies: Array[int] = []
+	for a in _state.get("allies", []):
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		if not _entity_alive(a as Dictionary):
+			ko_allies.append(int((a as Dictionary).get("id", -1)))
+	if ko_allies.is_empty():
+		return
+	# For each alive ally, add KO fear once (per round), regardless of how many fell.
+	for a2 in _state.get("allies", []):
+		if typeof(a2) != TYPE_DICTIONARY:
+			continue
+		if not _entity_alive(a2 as Dictionary):
+			continue
+		var id_a2: int = int((a2 as Dictionary).get("id", -1))
+		_increase_fear_on_entity(id_a2, HeroBal.FEAR_PER_ALLY_KO)

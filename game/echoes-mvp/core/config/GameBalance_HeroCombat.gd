@@ -95,3 +95,27 @@ const GUARD_DAMAGE_MULT: float = 0.5
 const COMBAT_ROUND_LIMIT: int = 6
 const COMBAT_FEAR_PER_ROUND: int = 1
 const COMBAT_BASE_MORALE: int = 50
+
+# ---------------------------------------------------------
+# FEAR → REFUSAL (MVP)
+# Source: Notion userstory “As the Keeper I want fear to push refusal”
+# Canon: Legacy Never Dies §9 (Combat) / Echo Behavior Matrix
+# These values are the single source of truth for fear-driven refusal.
+# Do NOT hardcode these numbers inside CombatEngine or ActionResolver.
+# ---------------------------------------------------------
+const FEAR_REFUSAL_THRESHOLD: int = 70  # at or above this, fear can override normal action
+const FEAR_MAX: int = 100               # clamp fear so probability math stays sane
+const FEAR_REFUSAL_BASE_CHANCE: float = 0.35  # 35% at threshold
+const FEAR_REFUSAL_PER_10_OVER: float = 0.05  # +5% for every 10 fear over threshold
+const FEAR_REFUSAL_ACTIONS: Array[String] = [
+    "refuse",  # full skip, log it
+    "guard"    # still helpful, defensive stance
+    # "retreat"  # POST-MVP: use separate abandon/retreat trigger, not normal fear refusal
+]
+
+# Fear gain sources (MVP)
+# These are used by CombatEngine to actually push units toward the refusal threshold.
+# If these are too low, fear-based refusal will basically never trigger in short fights.
+const FEAR_PER_HIT: int = 2        # when a unit is successfully hit
+const FEAR_PER_ALLY_KO: int = 4    # when an ally goes down/KO
+const FEAR_PER_FOCUS_HIT: int = 1  # extra when same unit is hit multiple times in one round

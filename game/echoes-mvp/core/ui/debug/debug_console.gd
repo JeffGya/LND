@@ -24,6 +24,7 @@ var _last_fight: Dictionary = {}  # { seed:int, rounds:int, party_ids:Array[int>
 var _econ_live_service: Node = null
 var _current_eng: Object = null  # holds the most recent CombatEngine instance for QA hooks
 var _morale_overrides_persist: Dictionary = {}  # persists morale overrides across demo engines
+var _fear_overrides_persist: Dictionary = {}    # persists fear overrides across demo engines (Subtask H)
 
 # Shared preloads
 const Seedbook = preload("res://core/seed/SeedBook.gd")
@@ -1101,6 +1102,8 @@ func _register_default_commands() -> void:
 			if eng.has_method("morale_override_set"):
 				eng.morale_override_set(id_i, v_i)
 		eng.start_battle(int(seed_val), party_ids, enemies, "defeat", rounds)
+		# Apply persisted fear overrides AFTER battle is started so state exists
+		_apply_fear_overrides_to_engine(eng)
 		var log := CombatLog.new(16)
 		_print_line("[fight_demo] party=%s seed=%d rounds=%d" % [str(party_ids), int(seed_val), rounds])
 		while not eng.is_over():
@@ -1135,6 +1138,8 @@ func _register_default_commands() -> void:
 			if eng.has_method("morale_override_set"):
 				eng.morale_override_set(id_i, v_i)
 		eng.start_battle(seed_v, party_ids, enemies, "defeat", rounds)
+		# Apply persisted fear overrides AFTER battle is started so state exists
+		_apply_fear_overrides_to_engine(eng)
 		var log := CombatLog.new(16)
 		_print_line("[fight_again] party=%s seed=%d rounds=%d" % [str(party_ids), seed_v, rounds])
 		while not eng.is_over():
@@ -1266,6 +1271,94 @@ func _register_default_commands() -> void:
 		return 0
 	_commands["/morale_clear"] = __morale_clear
 
+	# --- Combat fear QA hooks ---------------------------------------------------
+	var __fear_show := func(_args: Array) -> int:
+		if _current_eng == null:
+			_print_line("[fear_show] no active demo engine. Run /fight_demo or /fight_again first.")
+			return 1
+		var st_v: Variant = _current_eng.get("_state")
+		if typeof(st_v) != TYPE_DICTIONARY:
+			_print_line("[fear_show] engine state unavailable")
+			return 1
+		var st := st_v as Dictionary
+		var allies: Array = st.get("allies", [])
+		if allies.is_empty():
+			_print_line("[fear_show] no allies present in current engine state")
+			return 0
+		_print_line("[fear_show] allies=%d" % allies.size())
+		for a in allies:
+			if typeof(a) != TYPE_DICTIONARY:
+				continue
+			var id_i: int = int((a as Dictionary).get("id", -1))
+			var name_s: String = String((a as Dictionary).get("name", str(id_i)))
+			var stats: Dictionary = (a as Dictionary).get("stats", {})
+			var fear_v: int = 0
+			if typeof(stats) == TYPE_DICTIONARY and stats.has(EchoConstants.STAT_FEAR):
+				fear_v = int(stats.get(EchoConstants.STAT_FEAR, 0))
+			elif (a as Dictionary).has("fear"):
+				fear_v = int((a as Dictionary).get("fear", 0))
+			_print_line(" - id=%d name=%s fear=%d" % [id_i, name_s, fear_v])
+		return 0
+	_commands["/fear_show"] = __fear_show
+
+	var __fear_set := func(args: Array) -> int:
+		# Usage: /fear_set <ally_id:int> <0..100>
+		if args.size() < 2:
+			_print_line("Usage: /fear_set <ally_id:int> <0..100>")
+			return 1
+		var s_id := String(args[0])
+		var s_val := String(args[1])
+		if not s_id.is_valid_int() or (not s_val.is_valid_int() and not s_val.is_valid_float()):
+			_print_line("Usage: /fear_set <ally_id:int> <0..100>")
+			return 1
+		var id_i := int(s_id)
+		var val := int(float(s_val))
+		var clamped := clampi(val, 0, 100)
+		# Persist for next demo engines as well
+		_fear_overrides_persist[id_i] = clamped
+		# Apply to current combat engine if present
+		var applied_to_engine := false
+		if _current_eng != null:
+			var st_v2: Variant = _current_eng.get("_state")
+			if typeof(st_v2) == TYPE_DICTIONARY:
+				var st2 := st_v2 as Dictionary
+				var allies2: Array = st2.get("allies", [])
+				for i in range(allies2.size()):
+					var ent: Dictionary = allies2[i] as Dictionary
+					if typeof(ent) != TYPE_DICTIONARY:
+						continue
+					if int(ent.get("id", -1)) != id_i:
+						continue
+					ent["fear"] = clamped
+					var stats2: Dictionary = ent.get("stats", {})
+					if typeof(stats2) != TYPE_DICTIONARY:
+						stats2 = {}
+					stats2[EchoConstants.STAT_FEAR] = clamped
+					ent["stats"] = stats2
+					applied_to_engine = true
+					break
+		# Also try to update SaveService hero so next fights see the value
+		if has_node("/root/SaveService"):
+			var ss := get_node("/root/SaveService")
+			if ss.has_method("hero_get") and ss.has_method("hero_update"):
+				var hero_dict: Dictionary = ss.hero_get(id_i)
+				if typeof(hero_dict) == TYPE_DICTIONARY and not hero_dict.is_empty():
+					# update flat fear
+					hero_dict["fear"] = clamped
+					# update nested stats
+					var hstats: Dictionary = hero_dict.get("stats", {})
+					if typeof(hstats) != TYPE_DICTIONARY:
+						hstats = {}
+					hstats[EchoConstants.STAT_FEAR] = clamped
+					hero_dict["stats"] = hstats
+					ss.hero_update(hero_dict)
+		if applied_to_engine:
+			_print_line("[fear_set] id=%d fear=%d (current combat engine)" % [id_i, clamped])
+		else:
+			_print_line("[fear_set] persisted only (no active combat engine entity with id=%d)" % id_i)
+		return 0
+	_commands["/fear_set"] = __fear_set
+
 	# --- Combat temp boost QA ---------------------------------------------------
 	var __atk_boost := func(args: Array) -> int:
 		# Usage: /atk_boost <id:int> <delta:int>
@@ -1311,6 +1404,38 @@ func _register_default_commands() -> void:
 	_commands["/boost_clear"] = __boost_clear
 
 # --- Private helpers ---
+
+# Apply all persisted fear overrides to the current combat engine state.
+# This mirrors the morale override flow but works directly on state because
+# CombatEngine does not expose a dedicated fear-override API (MVP).
+func _apply_fear_overrides_to_engine(eng: Object) -> void:
+	if eng == null:
+		return
+	if _fear_overrides_persist.is_empty():
+		return
+	var st_v: Variant = eng.get("_state")
+	if typeof(st_v) != TYPE_DICTIONARY:
+		return
+	var st := st_v as Dictionary
+	var allies: Array = st.get("allies", [])
+	if allies.is_empty():
+		return
+	for k in _fear_overrides_persist.keys():
+		var target_id := int(k)
+		var target_val := int(_fear_overrides_persist[k])
+		for i in range(allies.size()):
+			var ent: Dictionary = allies[i] as Dictionary
+			if typeof(ent) != TYPE_DICTIONARY:
+				continue
+			if int(ent.get("id", -1)) != target_id:
+				continue
+			ent["fear"] = target_val
+			var stats: Dictionary = ent.get("stats", {})
+			if typeof(stats) != TYPE_DICTIONARY:
+				stats = {}
+			stats[EchoConstants.STAT_FEAR] = target_val
+			ent["stats"] = stats
+			break
 
 func _morale_label_and_mult(morale_val: int) -> Dictionary:
 	var m := clampi(int(morale_val), 0, 100)
