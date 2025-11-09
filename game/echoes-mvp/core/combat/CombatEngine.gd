@@ -92,6 +92,8 @@ func step_round() -> Dictionary:
 			# Decorate effect with names just like normal actions so logs stay consistent
 			var actor_name_fc: String = str(name_by_id.get(actor_id, str(actor_id)))
 			fear_effect["actor_name"] = actor_name_fc
+			# Canonical verb for logging
+			fear_effect["verb"] = _action_type_to_verb(int(fear_effect.get("type", -1)))
 			actions.append(fear_effect)
 			continue
 
@@ -119,6 +121,7 @@ func step_round() -> Dictionary:
 					"ok": false,
 					"type": t,
 					"actor_id": int(action.get("actor_id", -1)),
+					"verb": _action_type_to_verb(t),
 					"notes": "unsupported_action",
 				}
 		# Decorate effect with names and post-effect context for logging
@@ -137,6 +140,8 @@ func step_round() -> Dictionary:
 				if int(effect.get("type", -1)) == CombatConstants.ActionType.GUARD:
 					var guard_after: int = int((target_ent as Dictionary).get("guard_shield", 0))
 					effect["target_guard_after"] = guard_after
+		# Canonical verb for logging
+		effect["verb"] = _action_type_to_verb(int(effect.get("type", -1)))
 
 		# --- Preserve / derive morale QA fields so CombatLog can display them ----------
 		var eff_type := int(effect.get("type", -1))
@@ -924,6 +929,15 @@ func _pair_key(a: int, b: int) -> int:
 	var aa: int = a & 0x7fff
 	var bb: int = b & 0x7fff
 	return (aa << 15) | bb
+
+# Map numeric action types to canonical logger verbs
+static func _action_type_to_verb(t: int) -> String:
+	match t:
+		CombatConstants.ActionType.ATTACK: return "ATTACK"
+		CombatConstants.ActionType.GUARD:  return "GUARD"
+		CombatConstants.ActionType.MOVE:   return "MOVE"
+		CombatConstants.ActionType.REFUSE: return "REFUSE"
+		_:                                 return ""
 
 # Comparator for sorting candidate entities by hp ascending, then id ascending
 static func _cmp_hp_asc_id_asc(a: Dictionary, b: Dictionary) -> bool:

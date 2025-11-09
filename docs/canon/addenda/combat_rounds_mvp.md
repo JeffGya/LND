@@ -207,6 +207,66 @@ During this user story we discovered that “retreat” should **not** be a casu
 - When triggered, combat should **signal** an abandon event (e.g. `notes: "fear_abandon_signal"`) but the *actual* removal from Sanctum / roster should be handled by the campaign/sanctum layer, not in combat.
 - This keeps combat MVP fair and readable, and keeps permanent loss tied to legacy recovery (Faith / Legacy Fragments) per canon §10.
 
+## 5.3 Readable Combat Logs (MVP Final)
+
+**Canon Link:** LND §3, §4, §9, §12  
+**User Story:** *As the Keeper I want readable combat logs*
+
+**Directive:** Every combat **action** must produce **exactly one single-line** entry.
+
+**Line shape (canonical):**
+```
+<actor> <VERB> → <target?> <payload> <tags…>
+```
+- If there is **no target**, omit the arrow.
+- The output is **deterministic** and driven entirely by config.
+
+**Loggable verbs (MVP):** `ATTACK`, `GUARD`, `REFUSE`, `KO`, `TICK`  
+(Controlled via `LOG_ACTIONS` in `core/config/GameBalance_HeroCombat.gd`.)
+
+**Payload mapping:**
+- `ATTACK` → `dmg=<N>`
+- `GUARD` → `(+shield[=<N>])`
+- `REFUSE` → `(fear_refusal, fear=<N>)` or `(morale_refusal, morale=<N>)`
+- `KO` → no extra payload (0 HP is conveyed by the tag)
+- `TICK` → `(round_tick)`
+
+**Tags (order intent):**
+1. **HP/status** — `[hp/max]` (e.g., `[29/40]`, or `[0/40]` when KO)
+2. **Guard** — `[guard=<N>]` (only when `N>0`)
+3. **Breakdown** — `[ATK <A> → DEF <D>]` (designer view)
+
+> Tag visibility and presence are controlled **via verbosity profiles**.
+
+**Verbosity profiles & overrides:**
+- Declared in `GameBalance_HeroCombat.gd` under **COMBAT LOGGING (MVP)**:
+  - `LOGGING_PROFILES` → named profiles: `"mvp"`, `"designer"`, `"qa"`
+  - `LOG_PROFILE` → selects the active profile
+  - `LOG_OVERRIDE_SHOW_HP | _SHOW_GUARD | _SHOW_DMG_BREAKDOWN | _SHOW_INTERNAL` → per-flag hot overrides
+- Effective flags are resolved in the logger and applied uniformly.
+
+**Examples (designer profile):**
+```
+Kobi Gyasi ATTACK → Training Wraith #1 dmg=8 [32/40] [ATK 12 → DEF 4]
+Training Wraith #2 GUARD → Training Wraith #1 (+shield) [guard=1] [18/40]
+Sarah Danquah REFUSE (fear_refusal, fear=80)
+```
+
+**MVP vs Designer behaviors:**
+- **mvp** → only HP tags; no guard stack; no ATK→DEF breakdown.
+- **designer** → HP + guard + ATK→DEF breakdown.
+- **qa** → same as designer; reserved for future internal tags (rolls/seed crumbs).
+
+**Definition of Done (logs):**
+- Each **loggable** action yields **one** line; non-loggable actions yield **none**.
+- No blank lines; no `[guard=0]` tags; ordering is `HP → Guard → Breakdown` when visible.
+- Flipping any profile/override changes all lines on next run without code edits.
+
+**QA quick checks:**
+1. Set `LOG_PROFILE="mvp"` → attack lines show `dmg` + `[hp/max]` only.
+2. Set `LOG_PROFILE="designer"` → guard + breakdown tags appear.
+3. Set `LOG_OVERRIDE_SHOW_DMG_BREAKDOWN=false` (designer) → breakdown tag disappears, guard remains.
+4. Force refusal (`/fear_set <id> 80`) → `REFUSE (fear_refusal, fear=80)` single-line entry appears.
 
 ## 6. Determinism Guarantees
 

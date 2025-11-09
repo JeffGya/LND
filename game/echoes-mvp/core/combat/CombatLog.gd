@@ -6,10 +6,193 @@
 # -----------------------------------------------------------------------------
 class_name CombatLog
 
+const GameBalance_HeroCombat := preload("res://core/config/GameBalance_HeroCombat.gd")
+
 const SHOW_ATK_DEF_IN_LOG: bool = true
+const USE_CANON_FORMATTER: bool = true
 
 var _buffer: Array[Dictionary] = []
 var _max_snapshots: int = 10
+
+static func _should_log(verb: String) -> bool:
+	return GameBalance_HeroCombat.LOG_ENABLED and verb in GameBalance_HeroCombat.LOG_ACTIONS
+
+# Resolve active logging flags from profile + overrides in GameBalance_HeroCombat
+static func _resolve_flags() -> Dictionary:
+	var P: Dictionary = GameBalance_HeroCombat.LOGGING_PROFILES
+	var profile_name: String = String(GameBalance_HeroCombat.LOG_PROFILE)
+	var base: Dictionary = {}
+	if typeof(P) == TYPE_DICTIONARY and P.has(profile_name):
+		base = (P.get(profile_name, {}) as Dictionary).duplicate()
+	else:
+		# Fallback to designer profile if missing/typo
+		base = (P.get("designer", {}) as Dictionary).duplicate()
+
+	# Apply per-flag overrides when not null
+	var o_hp = GameBalance_HeroCombat.LOG_OVERRIDE_SHOW_HP
+	if o_hp != null:
+		base["show_hp"] = bool(o_hp)
+	var o_guard = GameBalance_HeroCombat.LOG_OVERRIDE_SHOW_GUARD
+	if o_guard != null:
+		base["show_guard"] = bool(o_guard)
+	var o_dmg = GameBalance_HeroCombat.LOG_OVERRIDE_SHOW_DMG_BREAKDOWN
+	if o_dmg != null:
+		base["show_dmg_breakdown"] = bool(o_dmg)
+	var o_int = GameBalance_HeroCombat.LOG_OVERRIDE_SHOW_INTERNAL
+	if o_int != null:
+		base["show_internal"] = bool(o_int)
+
+	return base
+
+func normalize_event(raw: Dictionary) -> Dictionary:
+	if typeof(raw) != TYPE_DICTIONARY:
+		return {}
+
+	var verb := String(raw.get("verb", raw.get("type_str", "")))
+	if not _should_log(verb):
+		return {}
+	var F: Dictionary = _resolve_flags()
+
+	var out := {
+		"actor_name": "",
+		"actor_id": -1,
+		"verb": verb,
+		"target_name": "",
+		"target_id": -1,
+		"value": 0,
+		"payload_kind": "",
+		"reason": "",
+		"hp_after": null,
+		"hp_max": null,
+		"atk": null,
+		"def": null,
+		"tags": []
+	}
+
+	# Actor fields
+	out["actor_name"] = String(raw.get("actor_name", raw.get("source_name", raw.get("name", ""))))
+	out["actor_id"] = int(raw.get("actor_id", raw.get("source_id", raw.get("id", -1))))
+
+	# Target fields
+	out["target_name"] = String(raw.get("target_name", raw.get("target_label", raw.get("target", ""))))
+	out["target_id"] = int(raw.get("target_id", raw.get("enemy_id", -1)))
+
+	match verb:
+		"ATTACK":
+			out["payload_kind"] = "dmg"
+			out["value"] = int(raw.get("dmg", raw.get("damage", 0)))
+			if raw.has("target_hp_after"):
+				out["hp_after"] = int(raw.get("target_hp_after"))
+			if raw.has("target_max_hp"):
+				out["hp_max"] = int(raw.get("target_max_hp"))
+			var atk_val: Variant = null
+			var def_val: Variant = null
+			if raw.has("atk_used") and raw.has("def_used"):
+				atk_val = int(raw.get("atk_used", 0))
+				def_val = int(raw.get("def_used", 0))
+			elif raw.has("attacker_atk") and raw.has("target_def"):
+				atk_val = int(raw.get("attacker_atk", 0))
+				def_val = int(raw.get("target_def", 0))
+			elif raw.has("dmg_inputs") and typeof(raw.get("dmg_inputs")) == TYPE_DICTIONARY:
+				var di : Variant = raw.get("dmg_inputs")
+				if di.has("atk") and di.has("def"):
+					atk_val = int(di.get("atk", 0))
+					def_val = int(di.get("def", 0))
+			out["atk"] = atk_val
+			out["def"] = def_val
+		"GUARD":
+			out["payload_kind"] = "shield"
+			out["value"] = int(raw.get("guard_value", raw.get("shield", 0)))
+			if raw.has("target_hp_after"):
+				out["hp_after"] = int(raw.get("target_hp_after"))
+			if raw.has("target_max_hp"):
+				out["hp_max"] = int(raw.get("target_max_hp"))
+			if raw.has("target_guard_after"):
+				var _g := int(raw.get("target_guard_after", 0))
+				if _g > 0:
+					out["tags"].append("[guard=%d]" % _g)
+		"REFUSE":
+			out["payload_kind"] = "refuse"
+			out["reason"] = String(raw.get("reason", raw.get("notes", "")))
+			if raw.has("fear"):
+				out["value"] = int(raw.get("fear"))
+			elif raw.has("morale"):
+				out["value"] = int(raw.get("morale"))
+		"KO":
+			out["payload_kind"] = "ko"
+			out["hp_after"] = 0
+		"TICK":
+			out["payload_kind"] = "tick"
+			out["value"] = 0
+
+	if bool(F.get("show_hp", true)) and out["hp_after"] != null and out["hp_max"] != null:
+		out["tags"].append("[%d/%d]" % [out["hp_after"], out["hp_max"]])
+
+	if bool(F.get("show_guard", true)) and raw.has("target_guard_after"):
+		# Add only when guard stack is positive
+		var _g2 := int(raw.get("target_guard_after", 0))
+		if _g2 > 0:
+			var guard_tag := "[guard=%d]" % _g2
+			if guard_tag not in out["tags"]:
+				out["tags"].append(guard_tag)
+
+	if bool(F.get("show_dmg_breakdown", true)) and out["atk"] != null and out["def"] != null:
+		out["tags"].append("[ATK %d → DEF %d]" % [out["atk"], out["def"]])
+
+	# Internal/QA tags can be appended here when F["show_internal"] is true (reserved for future use).
+
+	return out
+
+## Turn a normalized event into a single readable line
+## Expected input is the Dictionary returned by normalize_event(...)
+func format_line(ev: Dictionary) -> String:
+	if typeof(ev) != TYPE_DICTIONARY or ev.is_empty():
+		return ""
+
+	var actor: String = str(ev.get("actor_name", "?"))
+	var verb: String = str(ev.get("verb", "?"))
+	var line: String = "%s %s" % [actor, verb]
+
+	var target_name: String = str(ev.get("target_name", ""))
+	if target_name != "":
+		line += " → %s" % target_name
+
+	var payload: String = _format_payload(ev)
+	if payload != "":
+		line += " " + payload
+
+	# Tags — keep the order produced by the normalizer (HP first, then guard, then breakdown)
+	var tags_any : Variant = ev.get("tags", [])
+	if typeof(tags_any) == TYPE_ARRAY and (tags_any as Array).size() > 0:
+		for t in (tags_any as Array):
+			line += " " + str(t)
+
+	return line
+
+## Payload-only formatter so the main function stays readable
+static func _format_payload(ev: Dictionary) -> String:
+	var kind: String = str(ev.get("payload_kind", ""))
+	match kind:
+		"dmg":
+			return "dmg=%d" % int(ev.get("value", 0))
+		"shield":
+			var v: int = int(ev.get("value", 0))
+			return "(+shield=%d)" % v if v > 0 else "(+shield)"
+		"refuse":
+			var reason_raw: String = str(ev.get("reason", "refusal"))
+			# Canon wants e.g. "fear_refusal"; if not suffixed, add it.
+			var reason_tag: String = reason_raw if reason_raw.ends_with("_refusal") else reason_raw + "_refusal"
+			var v2: int = int(ev.get("value", -1))
+			if v2 >= 0 and (reason_raw == "fear" or reason_raw == "morale"):
+				return "(%s, %s=%d)" % [reason_tag, reason_raw, v2]
+			return "(%s)" % reason_tag
+		"ko":
+			# KO is carried by verb + [0/HP] tag, so no extra payload needed
+			return ""
+		"tick":
+			return "(round_tick)"
+		_:
+			return ""
 
 ## Configure optional in-memory ring buffer (last N snapshots)
 func _init(max_snapshots: int = 10) -> void:
@@ -44,8 +227,19 @@ func print_round(snapshot: Dictionary) -> void:
 
 	# --- Actions --------------------------------------------------------------
 	var actions: Array = snapshot.get("actions", [])
-	for a in actions:
-		print(_format_action(a))
+	if USE_CANON_FORMATTER:
+		for a in actions:
+			if typeof(a) != TYPE_DICTIONARY:
+				continue
+			var ev := normalize_event(a)
+			if ev.is_empty():
+				continue
+			var line := format_line(ev)
+			if line != "":
+				print(line)
+	else:
+		for a in actions:
+			print(_format_action(a))
 	if actions.is_empty():
 		print("(no actions)")
 

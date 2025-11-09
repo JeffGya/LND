@@ -87,6 +87,7 @@ const FALLBACK_MORALE: int = 50
 const MIN_DAMAGE: int = 1
 const GUARD_DAMAGE_MULT: float = 0.5
 
+
 # ---------------------------------------------------------
 # COMBAT RHYTHM (global)
 # Step-based rounds we’ve been testing were 5–6 rounds.
@@ -95,6 +96,77 @@ const GUARD_DAMAGE_MULT: float = 0.5
 const COMBAT_ROUND_LIMIT: int = 6
 const COMBAT_FEAR_PER_ROUND: int = 1
 const COMBAT_BASE_MORALE: int = 50
+
+# ---------------------------------------------------------
+# COMBAT LOGGING (MVP)
+# Source: Notion story “As the Keeper I want readable combat logs”
+# Purpose: single-line combat entries, controlled by design.
+# All combat loggers / formatters should read from here.
+# ---------------------------------------------------------
+const LOG_ENABLED: bool = true
+
+# Which high-level combat actions should always produce a line.
+# Keep these UPPERCASE to match verbs emitted by CombatEngine.
+const LOG_ACTIONS: Array[String] = [
+    "ATTACK",
+    "GUARD",
+    "REFUSE",
+    "KO",
+    "TICK"
+]
+
+# Visual/detail flags — used by core/combat/CombatLog.gd later.
+# Toggle these during testing to drop/enable parts of the line.
+const LOG_SHOW_HP: bool = true              # → [29/40]
+const LOG_SHOW_DMG_BREAKDOWN: bool = true   # → [ATK 15 → DEF 4]
+const LOG_SHOW_GUARD: bool = true           # → [guard=2]
+const LOG_SHOW_INTERNAL: bool = false       # → PRNG, raw rolls, seed, etc (MVP: off)
+
+# Controls the order of tags in the final line.
+# Normalizer/formatter will map concrete tags to these buckets.
+const LOG_TAG_ORDER: Array[String] = [
+    "hp",           # [29/40], [KO]
+    "guard",        # [guard=2]
+    "dmg_breakdown",
+    "other"
+]
+
+# ---------------------------------------------------------
+# LOGGING VERBOSITY PROFILES (MVP+)
+# Switch between player-friendly and QA-rich logs from config only.
+# Code should prefer these resolved flags (profile + overrides) over
+# the raw LOG_SHOW_* constants above. The older flags remain for
+# backward compatibility during the transition.
+# ---------------------------------------------------------
+const LOGGING_PROFILES := {
+    "mvp": {
+        "show_hp": true,
+        "show_guard": false,
+        "show_dmg_breakdown": false,
+        "show_internal": false,
+    },
+    "designer": {
+        "show_hp": true,
+        "show_guard": true,
+        "show_dmg_breakdown": true,
+        "show_internal": false,
+    },
+    "qa": {
+        "show_hp": true,
+        "show_guard": true,
+        "show_dmg_breakdown": true,
+        "show_internal": true,
+    },
+}
+
+# Active profile — change this to switch global verbosity.
+const LOG_PROFILE: String = "mvp"
+
+# Optional per-flag overrides. If null, the active profile value is used.
+const LOG_OVERRIDE_SHOW_HP: Variant = null
+const LOG_OVERRIDE_SHOW_GUARD: Variant = null
+const LOG_OVERRIDE_SHOW_DMG_BREAKDOWN: Variant = null
+const LOG_OVERRIDE_SHOW_INTERNAL: Variant = null
 
 # ---------------------------------------------------------
 # FEAR → REFUSAL (MVP)
