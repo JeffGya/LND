@@ -1,5 +1,3 @@
-
-
 ## EconomyConstants.gd
 ## Canon trace: Implements §12 "Ase Yield Curve" from Legacy Never Dies.
 ## Formula: piecewise — low slope up to FAITH_KNEE, then high slope to hit 100→2.0 exactly,
@@ -20,7 +18,12 @@ const FAITH_KNEE: int = 70
 const FAITH_HIGH_SLOPE: float = (FAITH_MULT_MAX - (1.0 + FAITH_SLOPE * float(FAITH_KNEE - FAITH_NEUTRAL))) / float(100 - FAITH_KNEE)
 
 # --- Ase ↔ Ekwan trade knobs (MVP — fixed, deterministic batches) ---
-# Canon §8 & §12: Marketplace swap to smooth variance; v1 uses strict integer batches.
+## ------------------------------------------------------------
+## DEPRECATED (non-breaking): legacy economy constants
+## These remain only for backward compatibility. Do NOT use in new code.
+## Use the proxy getters at the bottom of this file, which forward to
+## GameBalance_EconomySanctum (single source of truth for tuning).
+## ------------------------------------------------------------
 
 const ASE_PER_EKWAN: int = 500
 const EKWAN_MIN: int = 0
@@ -46,3 +49,19 @@ static func faith_to_multiplier(faith: int) -> float:
 		var knee_value := 1.0 + FAITH_SLOPE * float(FAITH_KNEE - FAITH_NEUTRAL)  # 1.3 at knee
 		raw = knee_value + FAITH_HIGH_SLOPE * (f - float(FAITH_KNEE))
 	return clampf(raw, FAITH_MULT_MIN, FAITH_MULT_MAX)
+
+# ------------------------------------------------------------------
+# Canonical accessors (non-breaking proxies) → GameBalance_EconomySanctum
+# ------------------------------------------------------------------
+static func get_summon_cost() -> int:
+	return GameBalance_EconomySanctum.SUMMON_BASE_COST_ASE
+
+static func ase_to_ekwan_rate() -> float:
+	return GameBalance_EconomySanctum.EXCHANGE_ASE_TO_EKWAN_RATE
+
+static func ekwan_to_ase_rate() -> float:
+	return GameBalance_EconomySanctum.EXCHANGE_EKWAN_TO_ASE_RATE
+
+# Optional convenience for callers that previously pulled tick base here
+static func ase_tick_base() -> float:
+	return GameBalance_EconomySanctum.ASE_TICK_BASE

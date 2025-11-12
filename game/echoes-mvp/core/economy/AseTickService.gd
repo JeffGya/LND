@@ -1,4 +1,8 @@
 extends Node
+
+@onready var BAL = GameBalance_EconomySanctum
+@onready var ECON = EconomyConstants
+
 ## AseTickService.gd — MVP idle Ase generation
 ## Canon notes:
 ##  - Ase is generated over time by the Ase Flame (Sanctum core).
@@ -6,6 +10,7 @@ extends Node
 ##      multiplier = 1 + 0.015 * (Faith - 50)
 ##      clamped to [0.5, 2.0] of base (see Balance §12 / Economy §8).
 ##  - This service only emits per-tick Ase; persistence is wired in Step 3.
+##  - Sources balance from GameBalance_EconomySanctum and Faith from EmotionsService when available.
 ##
 ## Usage (MVP):
 ##  - Add this node as a child in Main.tscn (or instantiate).
@@ -19,8 +24,9 @@ signal ase_generated(amount: float, total_after: float, tick_index: int)
 signal state_changed(state: String)
 signal ase_generated_ex(amount: float, total_after: float, tick_index: int, meta: Dictionary)
 
+# Debug overrides (exported for convenience)
 @export var base_ase_per_min: float = 2.0   # Base Ase per minute at Faith=50
-@export var tick_seconds: float = 60.0       # Seconds per tick
+@export var tick_seconds: float = 60.0 : set = _locked_set_tick_seconds      # Seconds per tick
 @export var faith: int = 60                  # Temporary source until emotions module
 @export var autostart: bool = true           # Start ticking on _ready
 
@@ -40,6 +46,21 @@ var _running_total: float = 0.0  # provisional local total (SaveService becomes 
 
 func _ready() -> void:
 	emit_signal("state_changed", "initializing")
+	# Enforce canonical GDD economy settings (per-minute yield is source of truth).
+	# Tick cadence is fixed at 60s to ensure visible chunks and correct passive yield.
+	base_ase_per_min = BAL.ASE_TICK_BASE
+	# Canonical tick: one tick per minute.
+	tick_seconds = 60.0
+
+	# Pull Faith from EmotionsService if available (source of truth). Fallback to exported value.
+	if Engine.has_singleton("EmotionsService"):
+		var emo = Engine.get_singleton("EmotionsService")
+		if typeof(emo) != TYPE_NIL and emo and emo.has_method("get_faith"):
+			faith = int(emo.get_faith())
+			# Live updates if service emits a signal.
+			if emo.has_signal("faith_changed"):
+				emo.connect("faith_changed", Callable(self, "_on_faith_changed"))
+
 	_timer = Timer.new()
 	_timer.wait_time = max(0.1, tick_seconds)
 	_timer.one_shot = false
@@ -74,10 +95,8 @@ func set_faith(value: int) -> void:
 	_cached_multiplier = _compute_faith_multiplier()
 	emit_signal("state_changed", "faith_updated:%d" % faith)
 
-func set_tick_seconds(seconds: float) -> void:
-	tick_seconds = max(0.1, seconds)
-	if _timer:
-		_timer.wait_time = tick_seconds
+func _on_faith_changed(value: int) -> void:
+	set_faith(value)
 
 func set_base_ase_per_min(v: float) -> void:
 	base_ase_per_min = max(0.0, v)
@@ -100,6 +119,22 @@ func get_last_tick_amount() -> float:
 func get_tick_index() -> int:
 	return _tick_index
 
+func _locked_set_tick_seconds(value: float) -> void:
+	# Tick cadence is locked by GDD; ignore external modifications.
+	tick_seconds = 60.0
+	if _timer:
+		_timer.wait_time = 60.0
+
+# --- Status Helpers ---
+
+func is_running() -> bool:
+	return _running
+
+func get_seconds_until_next_tick() -> float:
+	if _timer:
+		return _timer.time_left
+	return 0.0
+
 # --- Internals ---
 
 func _on_tick() -> void:
@@ -121,9 +156,7 @@ func _compute_tick_amount() -> float:
 	return per_tick
 
 func _compute_faith_multiplier() -> float:
-	# Canon single source of truth (EconomyConstants). This already clamps to [0.5, 2.0].
-	var mult := EconomyConstants.faith_to_multiplier(faith)
-	# Optional secondary clamp using exported fields for compatibility with existing inspector knobs.
+	var mult := ECON.faith_to_multiplier(faith)
 	if clamp_multiplier:
 		mult = clampf(mult, min_multiplier, max_multiplier)
 	return mult

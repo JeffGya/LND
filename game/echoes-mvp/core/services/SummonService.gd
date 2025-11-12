@@ -15,11 +15,8 @@ const EconBal = preload("res://core/config/GameBalance_EconomySanctum.gd")
 # Public API
 # --------------
 static func summon_cost() -> int:
-	# Prefer centralized balance file; fall back to EconomyConstants for legacy saves
-	var base_cost: int = EconBal.SUMMON_BASE_COST_ASE
-	if base_cost <= 0:
-		return EconomyConstants.ASE_SUMMON_COST
-	return base_cost
+	# Non-breaking proxy: always resolve through EconomyConstants → GameBalance_EconomySanctum
+	return int(EconomyConstants.get_summon_cost())
 
 static func can_afford(count: int = 1) -> Dictionary:
 	var c: int = max(1, count)

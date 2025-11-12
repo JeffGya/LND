@@ -88,7 +88,7 @@ func test_inverse_trade() -> bool:
 	var res: Dictionary = _econ.trade_ekwan_to_ase_inst(2)
 	var ase: int = EconomyServiceScript.get_ase_banked()
 	var ek: int = EconomyServiceScript.get_ekwan_banked()
-	var rate: int = int(res.get("rate", EconomyConstants.ASE_PER_EKWAN))
+	var rate: int = int(res.get("rate", 0))
 	var ok := bool(res.get("ok", false)) and int(res.get("ase_gained", -1)) == (2 * rate) and ase == (2 * rate) and ek == 0
 	if ok:
 		_pass(NAME)
@@ -123,7 +123,7 @@ func test_leftover_path() -> bool:
 	var ek_gained: int = int(res.get("ekwan_gained", -1))
 	var cost: int = int(res.get("ase_spent", -1))
 	var leftover: int = int(res.get("leftover_ase_requested", -1))
-	var rate: int = int(res.get("rate", EconomyConstants.ASE_PER_EKWAN))
+	var rate: int = int(res.get("rate", 0))
 	var ok := bool(res.get("ok", false)) and ek_gained == 1 and cost == rate and leftover == 250 and ase == 250 and ek == 1
 	if ok:
 		_pass(NAME)

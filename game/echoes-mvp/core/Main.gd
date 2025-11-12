@@ -1,7 +1,5 @@
 extends Node
 
-@onready var _ase_status_label: Label = get_node_or_null("AseStatusLabel")
-
 const AseTickService := preload("res://core/economy/AseTickService.gd")
 const EconomyServiceScript := preload("res://core/services/EconomyService.gd")
 @onready var _econ_service_inst: Node = EconomyServiceScript.new()
@@ -27,16 +25,12 @@ func _ready() -> void:
 		var faith_val := 60
 		if has_node("/root/SaveService"):
 			faith_val = get_node("/root/SaveService").emotions_get_faith()
-		# Fast dev defaults so you can see output immediately
-		if ase_tick.has_method("set_tick_seconds"):
-			ase_tick.set_tick_seconds(2.0)  # 2s ticks for visible logging
+		# Pull Faith from SaveService if the autoload exists; fallback to 60
 		if ase_tick.has_method("set_faith"):
 			ase_tick.set_faith(faith_val)
-		# Connect once and start
+		# Connect once for logging and start the service
 		if not ase_tick.ase_generated.is_connected(_on_ase_generated):
 			ase_tick.ase_generated.connect(_on_ase_generated)
-		if ase_tick.has_signal("state_changed") and not ase_tick.state_changed.is_connected(_on_ase_state_changed):
-			ase_tick.state_changed.connect(_on_ase_state_changed)
 		if ase_tick.has_method("start"):
 			ase_tick.start()
 	print("Echoes of the Sankofa — Main initialized.")
@@ -58,19 +52,3 @@ func _on_ase_generated(amount: float, total_after: float, tick_index: int) -> vo
 	# Query banked (int) via EconomyService static getters for clarity
 	var banked: int = int(EconomyServiceScript.get_ase_banked())
 	print("[AseTick] +%.2f → effective=%.2f, banked=%d (tick %d)" % [amount, eff_after, banked, tick_index])
-	if _ase_status_label:
-		_ase_status_label.text = "Ase: running — +%.2f (tick %d) • eff=%.2f • banked=%d" % [amount, tick_index, eff_after, banked]
-
-func _on_ase_state_changed(state: String) -> void:
-	if _ase_status_label:
-		match state:
-			"initializing":
-				_ase_status_label.text = "Ase: initializing…"
-			"starting":
-				_ase_status_label.text = "Ase: starting…"
-			"running":
-				_ase_status_label.text = "Ase: running"
-			"stopped":
-				_ase_status_label.text = "Ase: stopped"
-			_:
-				_ase_status_label.text = "Ase: " + state
