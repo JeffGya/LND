@@ -12,6 +12,7 @@
 class_name EnemyFactory
 
 const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
+const RealmBal = preload("res://core/config/GameBalance_Realm.gd")
 
 ## MVP baseline stats for dummy enemies. Easy to read in logs.
 const DUMMY_BASE := {
@@ -24,6 +25,103 @@ const DUMMY_BASE := {
 	"morale": HeroBal.TRAINING_MORALE,
 	"fear": HeroBal.TRAINING_FEAR,
 }
+
+## Realm-aware enemy family mapping for MVP.
+## We keep this lean: different names/tags per realm, with stat multipliers
+## driven by GameBalance_Realm tier scalars.
+const REALM_ENEMY_FAMILY := {
+	"vale_of_dust": "wraith",
+	"shrouded_grove": "seer",
+}
+
+## Spawn a pack of enemies themed around the given Realm/Stage.
+##
+## @param realm RealmModel - the active realm (virtue, tier, id)
+## @param stage StageModel  - the current stage (objective_type, encounter_seed)
+## @return Array[Dictionary] - enemies in stable order (id asc), suitable for
+##         the existing combat harness (same shape as spawn_dummy_pack).
+static func spawn_realm_pack(realm, stage) -> Array[Dictionary]:
+	if realm == null or stage == null:
+		return []
+
+	var pack_size: int = _get_pack_size_for_stage(stage)
+
+	# Deterministic RNG for future small variations (elite markers, etc.).
+	# For MVP we do not yet vary stats per enemy, but keeping the RNG seeded
+	# means we can safely add that later without breaking determinism.
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = stage.encounter_seed
+
+	var family: String = _get_family_for_realm(realm)
+
+	# Tier-based stat multipliers from GameBalance_Realm.
+	var scalars: Dictionary = RealmBal.get_tier_scalars(realm.tier)
+	var power: Dictionary = scalars.get("enemy_power", {})
+	var hp_mul: float = float(power.get("hp_mul", 1.0))
+	var atk_mul: float = float(power.get("atk_mul", 1.0))
+	var agi_mul: float = float(power.get("agi_mul", 1.0))
+
+	var out: Array[Dictionary] = []
+
+	for i in range(pack_size):
+		var local_id: int = 2000 + i  # keep distinct from spawn_dummy_pack ids
+		var name: String = _build_enemy_name(family, realm, i)
+
+		# Apply tier multipliers on top of MVP dummy baseline.
+		var enemy: Dictionary = {
+			"id": local_id,
+			"name": name,
+			"rank": DUMMY_BASE.rank,
+			"hp": int(round(DUMMY_BASE.hp * hp_mul)),
+			"max_hp": int(round(DUMMY_BASE.max_hp * hp_mul)),
+			"atk": int(round(DUMMY_BASE.atk * atk_mul)),
+			"def": DUMMY_BASE.def, # kept flat for MVP; curves can adjust later
+			"agi": int(round(DUMMY_BASE.agi * agi_mul)),
+			"morale": DUMMY_BASE.morale,
+			"fear": DUMMY_BASE.fear,
+			"tags": ["realm", realm.id, family],
+		}
+
+		out.append(enemy)
+
+	# Ensure stable order by id.
+	out.sort_custom(Callable(EnemyFactory, "_cmp_id_asc"))
+	return out
+
+
+## Decide pack size based on objective type (MVP-lean).
+static func _get_pack_size_for_stage(stage) -> int:
+	match stage.objective_type:
+		"combat_trial":
+			# Core combat test: small group, not a swarm.
+			return 3
+		"purify_shrine":
+			# Slightly smaller group to reflect mixed focus (combat + ritual).
+			return 2
+		_:
+			return 2
+
+
+## Map a realm to an enemy family token used for naming and tagging.
+static func _get_family_for_realm(realm) -> String:
+	if realm == null:
+		return "wraith"
+	return REALM_ENEMY_FAMILY.get(realm.id, "wraith")
+
+
+## Build a readable enemy name based on family and realm context.
+static func _build_enemy_name(family: String, realm, index: int) -> String:
+	var base: String = ""
+	match family:
+		"wraith":
+			base = "Dust Wraith"
+		"seer":
+			base = "Grove Seer"
+		_:
+			base = "Realm Foe"
+
+	# Example: "Dust Wraith #1", "Grove Seer #2"
+	return "%s #%d" % [base, index + 1]
 
 ## Generates a deterministic array of dummy enemies for testing the round loop.
 ##

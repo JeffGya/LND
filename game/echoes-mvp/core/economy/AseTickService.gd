@@ -1,7 +1,7 @@
 extends Node
 
-@onready var BAL = GameBalance_EconomySanctum
-@onready var ECON = EconomyConstants
+var BAL = GameBalance_EconomySanctum
+var ECON = EconomyConstants
 
 ## AseTickService.gd — MVP idle Ase generation
 ## Canon notes:
@@ -43,6 +43,7 @@ var _running: bool = false
 var _tick_index: int = 0
 var _last_amount: float = 0.0
 var _running_total: float = 0.0  # provisional local total (SaveService becomes source of truth later)
+var _effective_tick_seconds: float = 60.0
 
 func _ready() -> void:
 	emit_signal("state_changed", "initializing")
@@ -52,6 +53,16 @@ func _ready() -> void:
 	# Canonical tick: one tick per minute.
 	tick_seconds = 60.0
 
+	_effective_tick_seconds = tick_seconds
+	_timer = Timer.new()
+	_timer.wait_time = max(0.1, _effective_tick_seconds)
+	_timer.one_shot = false
+	add_child(_timer)
+	_timer.timeout.connect(_on_tick)
+	_cached_multiplier = _compute_faith_multiplier()
+	if autostart:
+		start()
+
 	# Pull Faith from EmotionsService if available (source of truth). Fallback to exported value.
 	if Engine.has_singleton("EmotionsService"):
 		var emo = Engine.get_singleton("EmotionsService")
@@ -60,15 +71,6 @@ func _ready() -> void:
 			# Live updates if service emits a signal.
 			if emo.has_signal("faith_changed"):
 				emo.connect("faith_changed", Callable(self, "_on_faith_changed"))
-
-	_timer = Timer.new()
-	_timer.wait_time = max(0.1, tick_seconds)
-	_timer.one_shot = false
-	add_child(_timer)
-	_timer.timeout.connect(_on_tick)
-	_cached_multiplier = _compute_faith_multiplier()
-	if autostart:
-		start()
 
 func start() -> void:
 	if _running:
@@ -105,7 +107,7 @@ func get_base_ase_per_min() -> float:
 	return base_ase_per_min
 
 func get_tick_seconds() -> float:
-	return tick_seconds
+	return _effective_tick_seconds
 
 func get_faith() -> int:
 	return faith
@@ -122,8 +124,18 @@ func get_tick_index() -> int:
 func _locked_set_tick_seconds(value: float) -> void:
 	# Tick cadence is locked by GDD; ignore external modifications.
 	tick_seconds = 60.0
+	_effective_tick_seconds = 60.0
 	if _timer:
 		_timer.wait_time = 60.0
+
+func set_tick_seconds(seconds: float) -> void:
+	# Test/debug helper: override the effective tick interval on this instance only.
+	# Runtime code does not call this on the main AseTickService node, so the
+	# in-game cadence remains 60s unless explicitly overridden for experiments.
+	var clamped : Variant = max(0.01, seconds)
+	_effective_tick_seconds = clamped
+	if _timer:
+		_timer.wait_time = clamped
 
 # --- Status Helpers ---
 
@@ -152,7 +164,7 @@ func _on_tick() -> void:
 
 func _compute_tick_amount() -> float:
 	var per_min := base_ase_per_min * _cached_multiplier
-	var per_tick := per_min * (tick_seconds / 60.0)
+	var per_tick := per_min * (_effective_tick_seconds / 60.0)
 	return per_tick
 
 func _compute_faith_multiplier() -> float:

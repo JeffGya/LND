@@ -33,6 +33,9 @@ const EconomyServiceScript = preload("res://core/services/EconomyService.gd")
 const SummonServiceScript = preload("res://core/services/SummonService.gd")
 const GameBalance_EconomySanctum = preload("res://core/config/GameBalance_EconomySanctum.gd")
 const GameBalance_Debug = preload("res://core/config/GameBalance_Debug.gd")
+const GameBalance_Realm = preload("res://core/config/GameBalance_Realm.gd")
+const RealmServiceScript = preload("res://core/services/RealmService.gd")
+const ObjectiveRunnerScript = preload("res://core/world/ObjectiveRunner.gd")
 const EchoConstants = preload("res://core/echoes/EchoConstants.gd")
 const PersonalityArchetype = preload("res://core/echoes/PersonalityArchetype.gd")
 const ArchetypeBarks = preload("res://core/echoes/ArchetypeBarks.gd")
@@ -164,6 +167,280 @@ func _register_default_commands() -> void:
 			if t and t.has_method("log"):
 				t.log("seed_info", info)
 		return 0
+
+	# --- Realm system commands (seeded realms, stages, and rewards) ----------
+	_commands["/realm"] = func(args: Array) -> int:
+		# Usage:
+		#   /realm help
+		#   /realm list
+		#   /realm new <realm_id> [tier:int]
+		#   /realm show
+		#   /realm enter [stage_index:int]
+		#   /realm complete
+		if args.is_empty():
+			_print_line("Usage: /realm <help|list|new|show|enter|complete> [...]")
+			return 1
+		var sub := String(args[0]).to_lower()
+		var rest: Array = []
+		if args.size() > 1:
+			for i in range(1, args.size()):
+				rest.append(args[i])
+
+		match sub:
+			"help":
+				_print_line("Realm commands:")
+				_print_line("  /realm list                    — list available realm ids & virtues")
+				_print_line("  /realm new <id> [tier]          — generate & set active realm from campaign seed")
+				_print_line("  /realm show                    — show active realm layout and progress")
+				_print_line("  /realm enter [stage_index]     — run a stage via ObjectiveRunner")
+				_print_line("  /realm complete                — auto-complete remaining stages (rewards only)")
+				return 0
+
+			"list":
+				var ids: Array = GameBalance_Realm.get_realm_ids()
+				if ids.is_empty():
+					_print_line("[realm] no realms configured in GameBalance_Realm")
+					return 0
+				_print_line("[realm] available realms:")
+				for raw_id in ids:
+					var id_s := String(raw_id)
+					var meta: Dictionary = GameBalance_Realm.get_realm_meta(id_s)
+					var name_s := String(meta.get("name", id_s))
+					var virtue_s := String(meta.get("virtue", ""))
+					var def_tier := int(meta.get("default_tier", 1))
+					_print_line(" - %s  | %s | default_tier=%d" % [id_s, virtue_s, def_tier])
+				return 0
+
+			"new":
+				# /realm new <realm_id> [tier:int]
+				if rest.size() < 1:
+					_print_line("Usage: /realm new <realm_id> [tier:int]")
+					return 1
+				var realm_id := String(rest[0])
+				var tier := 1
+				if rest.size() > 1:
+					var t_s := String(rest[1])
+					if not t_s.is_valid_int():
+						_print_line("Usage: /realm new <realm_id> [tier:int]")
+						return 1
+					tier = max(1, int(t_s))
+				else:
+					var meta2: Dictionary = GameBalance_Realm.get_realm_meta(realm_id)
+					if not meta2.is_empty():
+						tier = max(1, int(meta2.get("default_tier", 1)))
+				# Campaign seed from Seedbook
+				var info: Dictionary = Seedbook.get_all_seed_info()
+				var cs: int = int(info.get("campaign_seed", 0))
+				if cs == 0:
+					_print_line("[realm new] warning: campaign_seed=0 (did you run /new_game or /load?)")
+				var realm_obj := RealmServiceScript.get_or_create(realm_id, tier, cs)
+				if realm_obj == null:
+					_print_line("[realm new] failed to generate realm '%s' (check config id)" % realm_id)
+					return 2
+				RealmServiceScript.set_active(realm_obj)
+				var meta3: Dictionary = GameBalance_Realm.get_realm_meta(realm_id)
+				var display_name := String(meta3.get("name", realm_id))
+				var virtue := String(meta3.get("virtue", realm_obj.virtue if realm_obj != null else ""))
+				var stages: Array = realm_obj.stages
+				var stage_count := stages.size()
+				_print_line("[realm] Active: %s (%s) | tier=%d | seed=%d | stages=%d" % [
+					display_name,
+					virtue,
+					int(realm_obj.tier),
+					int(realm_obj.seed),
+					stage_count
+				])
+				return 0
+
+			"show":
+				var active := RealmServiceScript.get_active()
+				if active == null:
+					_print_line("[realm show] no active realm. Use '/realm new <id>' first.")
+					return 1
+				var meta4: Dictionary = GameBalance_Realm.get_realm_meta(active.id)
+				var name_s2 := String(meta4.get("name", active.id))
+				var virtue_s2 := String(meta4.get("virtue", active.virtue))
+				var total_stages := active.stages.size()
+				var cur_idx := int(active.current_stage_index)
+				var finished := bool(active.is_finished())
+				_print_line("[realm] %s (%s) | tier=%d | seed=%d | stages=%d | current=%d | finished=%s" % [
+					name_s2,
+					virtue_s2,
+					int(active.tier),
+					int(active.seed),
+					total_stages,
+					cur_idx,
+					str(finished)
+				])
+				_print_line("Stages:")
+				for i in range(total_stages):
+					var stg = active.stages[i]
+					var obj_type := String(stg.objective_type)
+					var s_seed := int(stg.encounter_seed)
+					var mods: Dictionary = stg.modifiers
+					var fear_delta := int(mods.get("fear_delta", 0))
+					var marker := " "
+					if not finished and i == cur_idx:
+						marker = ">"
+					elif finished and i == total_stages - 1:
+						marker = "*"
+					_print_line(" %s %d | %s | seed=%d | fear_delta=%d" % [
+						marker,
+						i,
+						obj_type,
+						s_seed,
+						fear_delta
+					])
+				return 0
+
+			"enter":
+				# /realm enter [stage_index:int]
+				var active2 := RealmServiceScript.get_active()
+				if active2 == null:
+					_print_line("[realm enter] no active realm. Use '/realm new <id>' first.")
+					return 1
+				var total2 := active2.stages.size()
+				if total2 == 0:
+					_print_line("[realm enter] active realm has no stages.")
+					return 1
+				var stage_index := -1
+				if rest.size() > 0:
+					var idx_s := String(rest[0])
+					if not idx_s.is_valid_int():
+						_print_line("Usage: /realm enter [stage_index:int]")
+						return 1
+					stage_index = int(idx_s)
+				if stage_index < 0:
+					stage_index = int(active2.current_stage_index)
+				if stage_index < 0 or stage_index >= total2:
+					_print_line("[realm enter] invalid stage_index=%d (0..%d)" % [stage_index, total2 - 1])
+					return 1
+				var stage = active2.stages[stage_index]
+				if stage == null:
+					_print_line("[realm enter] stage %d is null." % stage_index)
+					return 1
+				# Build party ids: prefer staged party, else auto-pick up to 3 available allies.
+				var party_ids: Array[int] = []
+				for pid in _staged_party:
+					party_ids.append(int(pid))
+				var ss_dict: Dictionary = _read_save_snapshot()
+				if party_ids.is_empty():
+					var avail: Array[Dictionary] = PartyRoster.list_available_allies(ss_dict)
+					for h in avail:
+						if party_ids.size() >= 3:
+							break
+						party_ids.append(int(h.get("id", -1)))
+				if party_ids.is_empty():
+					_print_line("[realm enter] no available heroes (summon or heal first).")
+					return 1
+				var res_party: Dictionary = PartyRoster.validate_party(ss_dict, party_ids, 3)
+				if not bool(res_party.get("ok", false)):
+					_print_line("[realm enter] invalid party:")
+					for e in (res_party.get("errors", []) as Array):
+						_print_line(" - %s" % String(e))
+					return 2
+				var party_final: Array[int] = res_party.get("party", party_ids)
+
+				# Local combat harness wrapper (hero_party = party ids for CombatEngine).
+				var combat_runner := func(hero_party: Array, enemies: Array, seed: int) -> Dictionary:
+					var rounds := 5
+					if typeof(GameBalance_Debug) == TYPE_OBJECT:
+						rounds = int(GameBalance_Debug.DEBUG_FIGHT_ROUNDS)
+					var eng := CombatEngine.new()
+					_current_eng = eng
+					var party_ids_local: Array[int] = []
+					for p in hero_party:
+						party_ids_local.append(int(p))
+					eng.start_battle(seed, party_ids_local, enemies, "defeat", rounds)
+					_apply_fear_overrides_to_engine(eng)
+					var log := CombatLog.new(16)
+					var round_count := 0
+					while not eng.is_over():
+						var snap: Dictionary = eng.step_round()
+						log.print_round(snap)
+						round_count += 1
+					var combat_res: Dictionary = {}
+					if eng.has_method("result"):
+						var raw: Variant = eng.result()
+						if typeof(raw) == TYPE_DICTIONARY:
+							combat_res = raw
+					combat_res["rounds"] = round_count
+					if not combat_res.has("success"):
+						var success_flag := true
+						if combat_res.has("outcome"):
+							success_flag = String(combat_res.get("outcome")) != "enemies_win"
+						combat_res["success"] = success_flag
+					return combat_res
+
+				var stage_result: Dictionary = ObjectiveRunnerScript.run_stage(active2, stage, party_final, combat_runner)
+				var ok_stage := bool(stage_result.get("success", false))
+				_print_line("[realm enter] stage=%d type=%s success=%s" % [
+					stage_index,
+					String(stage.objective_type),
+					str(ok_stage)
+				])
+				if not ok_stage:
+					return 0
+
+				var reward_result: Dictionary = RealmServiceScript.complete_stage()
+				var stage_rewards: Dictionary = reward_result.get("stage_rewards", {})
+				var completion_rewards: Dictionary = reward_result.get("completion_rewards", {})
+
+				var ase_total := int(stage_rewards.get("ase_delta", 0) + completion_rewards.get("ase_delta", 0))
+				var ek_total := int(stage_rewards.get("ekwan_delta", 0) + completion_rewards.get("ekwan_delta", 0))
+				_print_line("[realm enter] rewards — Ase +%d, Ekwan +%d" % [ase_total, ek_total])
+
+				var relic_roll: Dictionary = stage_rewards.get("relic_roll", {})
+				if typeof(relic_roll) == TYPE_DICTIONARY and bool(relic_roll.get("awarded", false)):
+					_print_line("[realm enter] relic awarded: rarity=%s" % String(relic_roll.get("rarity", "unknown")))
+
+				var after := RealmServiceScript.get_active()
+				if after != null:
+					var cur_idx2 := int(after.current_stage_index)
+					var finished2 := bool(after.is_finished())
+					_print_line("[realm enter] realm progress — current_stage=%d/%d, finished=%s" % [
+						cur_idx2,
+						after.stages.size(),
+						str(finished2)
+					])
+				return 0
+
+			"complete":
+				var active3 := RealmServiceScript.get_active()
+				if active3 == null:
+					_print_line("[realm complete] no active realm. Use '/realm new <id>' first.")
+					return 1
+				var total3 := active3.stages.size()
+				if total3 == 0:
+					_print_line("[realm complete] active realm has no stages.")
+					return 1
+				var steps := 0
+				var ase_sum := 0
+				var ek_sum := 0
+				var relics := 0
+				while not active3.is_finished():
+					var rr: Dictionary = RealmServiceScript.complete_stage()
+					var sr: Dictionary = rr.get("stage_rewards", {})
+					var cr: Dictionary = rr.get("completion_rewards", {})
+					ase_sum += int(sr.get("ase_delta", 0) + cr.get("ase_delta", 0))
+					ek_sum += int(sr.get("ekwan_delta", 0) + cr.get("ekwan_delta", 0))
+					var r_roll: Dictionary = sr.get("relic_roll", {})
+					if typeof(r_roll) == TYPE_DICTIONARY and bool(r_roll.get("awarded", false)):
+						relics += 1
+					steps += 1
+					if steps > 64:
+						break
+				_print_line("[realm complete] auto-completed %d remaining stages. Ase +%d, Ekwan +%d, relics=%d" % [
+					steps,
+					ase_sum,
+					ek_sum,
+					relics
+				])
+				return 0
+
+			_:
+				_print_line("Usage: /realm <help|list|new|show|enter|complete> [...]")
+				return 1
 
 	# --- Summoning commands ---------------------------------------------------
 	_commands["/summon"] = func(args: Array) -> int:
@@ -884,7 +1161,7 @@ func _register_default_commands() -> void:
 	# --- Test runner -----------------------------------------------------------
 	_commands["/run_tests"] = func(args: Array) -> int:
 		if args.size() == 0:
-			_print_line("Usage: /run_tests <economy|all>")
+			_print_line("Usage: /run_tests <economy|realms|all>")
 			return 1
 		var suite := String(args[0]).to_lower()
 		match suite:
@@ -896,7 +1173,35 @@ func _register_default_commands() -> void:
 				var failed := int(totals.get("failed", total - passed))
 				_print_line("[run_tests] economy: %d/%d PASS%s" % [passed, total, ("" if failed == 0 else " (" + str(failed) + " FAIL)")])
 				return 0 if failed == 0 else 2
+
+			"realms":
+				# Lightweight wrapper around the realm tests in core/tests/realm/.
+				var T_gen = load("res://core/tests/realm/test_realm_generation.gd")
+				if T_gen == null:
+					_print_line("[run_tests] realms: generation script not found at core/tests/realm/test_realm_generation.gd")
+					return 1
+				if not T_gen.has_method("run_all"):
+					_print_line("[run_tests] realms: run_all() not found on generation script")
+					return 1
+
+				var T_rewards = load("res://core/tests/realm/test_realm_rewards.gd")
+				if T_rewards == null:
+					_print_line("[run_tests] realms: rewards script not found at core/tests/realm/test_realm_rewards.gd")
+					return 1
+				if not T_rewards.has_method("run_all"):
+					_print_line("[run_tests] realms: run_all() not found on rewards script")
+					return 1
+
+				_print_line("[run_tests] realms: starting realm generation tests…")
+				T_gen.run_all()
+				_print_line("[run_tests] realms: starting realm reward tests…")
+				T_rewards.run_all()
+				_print_line("[run_tests] realms: completed (see PASS/FAIL lines above).")
+				# NOTE: realm tests report PASS/FAIL via push_error; we return 0 here.
+				return 0
+
 			"all":
+				# Run the existing economy suite via TestRunner
 				var res: Dictionary = TestRunner.run_all(true)
 				var econ: Dictionary = res.get("economy", {})
 				var totals2: Dictionary = econ.get("totals", {})
@@ -904,9 +1209,20 @@ func _register_default_commands() -> void:
 				var total2 := int(totals2.get("total", 0))
 				var failed2 := int(totals2.get("failed", total2 - passed2))
 				_print_line("[run_tests] economy: %d/%d PASS%s" % [passed2, total2, ("" if failed2 == 0 else " (" + str(failed2) + " FAIL)")])
+				# Also run realm determinism tests as part of "all" for extra coverage
+				var T2 = load("res://core/tests/realm/test_realm_generation.gd")
+				if T2 != null and T2.has_method("run_all"):
+					_print_line("[run_tests] realms: starting realm generation tests…")
+					T2.run_all()
+				var T3 = load("res://core/tests/realm/test_realm_rewards.gd")
+				if T3 != null and T3.has_method("run_all"):
+					_print_line("[run_tests] realms: starting realm reward tests…")
+					T3.run_all()
+				_print_line("[run_tests] realms: completed (see PASS/FAIL lines above).")
 				return 0 if failed2 == 0 else 2
+
 			_:
-				_print_line("Usage: /run_tests <economy|all>")
+				_print_line("Usage: /run_tests <economy|realms|all>")
 				return 1
 
 	# --- Telemetry controls ---------------------------------------------------

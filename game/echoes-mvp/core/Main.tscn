@@ -1,21 +1,9 @@
-[gd_scene load_steps=6 format=3 uid="uid://boyuptpwfymxy"]
+[gd_scene load_steps=5 format=3 uid="uid://boyuptpwfymxy"]
 
 [ext_resource type="Script" uid="uid://nhj1l5w1kts" path="res://core/Main.gd" id="1"]
 [ext_resource type="Script" uid="uid://b6le6wig1yhe6" path="res://core/economy/AseTickService.gd" id="2"]
 [ext_resource type="Script" uid="uid://b4fadyprbml2q" path="res://core/ui/debug/debug_console.gd" id="3"]
 [ext_resource type="Script" uid="uid://bnab47o8oqgtm" path="res://core/ui/AseStatusLabel.gd" id="3_b2jpy"]
-
-[sub_resource type="FontFile" id="FontFile_b2jpy"]
-cache/0/20/0/ascent = 0.0
-cache/0/20/0/descent = 0.0
-cache/0/20/0/underline_position = 0.0
-cache/0/20/0/underline_thickness = 0.0
-cache/0/20/0/scale = 1.0
-cache/0/16/0/ascent = 0.0
-cache/0/16/0/descent = 0.0
-cache/0/16/0/underline_position = 0.0
-cache/0/16/0/underline_thickness = 0.0
-cache/0/16/0/scale = 1.0
 
 [node name="Node" type="Node"]
 script = ExtResource("1")
@@ -26,8 +14,7 @@ script = ExtResource("2")
 [node name="AseStatusLabel" type="Label" parent="."]
 offset_left = 8.0
 offset_top = 8.0
-theme_override_fonts/font = SubResource("FontFile_b2jpy")
-theme_override_font_sizes/font_size = 20
+theme_override_font_sizes/font_size = 24
 text = "Ase: initializing…"
 script = ExtResource("3_b2jpy")
 

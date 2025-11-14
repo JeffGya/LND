@@ -173,6 +173,107 @@ static func trade_ekwan_to_ase(ekwan_to_spend: int) -> Dictionary:
 	return _result_success(out)
 
 # -------------------------------------------------------------
+# Realm reward application (Ase/Ekwan to player bank)
+# -------------------------------------------------------------
+## Apply rewards from a cleared Realm stage to the player's balances.
+## Input:
+##   reward: output of RealmRewardCalc.stage_rewards(...)
+##   realm:  RealmModel (for telemetry context)
+##   stage:  StageModel (for telemetry context)
+##
+## Returns:
+##   {
+##     "ase_delta": int,
+##     "ekwan_delta": int,
+##     "relic_roll": Dictionary, # echoed back
+##   }
+static func apply_realm_stage_rewards(reward: Dictionary, realm, stage) -> Dictionary:
+	var ase: int = int(reward.get("ase", 0))
+	var ekwan: int = int(reward.get("ekwan", 0))
+	var relic_roll = reward.get("relic_roll", {})
+
+	# Defensive: never apply negative deposits.
+	if ase < 0:
+		ase = 0
+	if ekwan < 0:
+		ekwan = 0
+
+	if ase > 0:
+		SaveService.economy_adjust_ase(ase)
+	if ekwan > 0:
+		SaveService.economy_adjust_ekwan(ekwan)
+
+	var relic_awarded: bool = false
+	var relic_rarity: String = ""
+	if typeof(relic_roll) == TYPE_DICTIONARY:
+		relic_awarded = bool(relic_roll.get("awarded", false))
+		relic_rarity = String(relic_roll.get("rarity", ""))
+
+	# Telemetry: record realm stage reward event.
+	SaveService.telemetry_append(
+		"economy",
+		"realm_stage_reward",
+		{
+			"realm_id": realm.id if realm != null else "",
+			"realm_tier": realm.tier if realm != null else 0,
+			"stage_index": stage.index if stage != null else -1,
+			"ase_delta": ase,
+			"ekwan_delta": ekwan,
+			"relic_awarded": relic_awarded,
+			"relic_rarity": relic_rarity,
+		},
+		1
+	)
+
+	return {
+		"ase_delta": ase,
+		"ekwan_delta": ekwan,
+		"relic_roll": relic_roll,
+	}
+
+
+## Apply rewards from completing an entire Realm.
+## Input:
+##   reward: output of RealmRewardCalc.completion_rewards(...)
+##   realm:  RealmModel (for telemetry context)
+##
+## Returns:
+##   {
+##     "ase_delta": int,
+##     "ekwan_delta": int,
+##   }
+static func apply_realm_completion_rewards(reward: Dictionary, realm) -> Dictionary:
+	var ase: int = int(reward.get("ase", 0))
+	var ekwan: int = int(reward.get("ekwan", 0))
+
+	if ase < 0:
+		ase = 0
+	if ekwan < 0:
+		ekwan = 0
+
+	if ase > 0:
+		SaveService.economy_adjust_ase(ase)
+	if ekwan > 0:
+		SaveService.economy_adjust_ekwan(ekwan)
+
+	SaveService.telemetry_append(
+		"economy",
+		"realm_completion_reward",
+		{
+			"realm_id": realm.id if realm != null else "",
+			"realm_tier": realm.tier if realm != null else 0,
+			"ase_delta": ase,
+			"ekwan_delta": ekwan,
+		},
+		1
+	)
+
+	return {
+		"ase_delta": ase,
+		"ekwan_delta": ekwan,
+	}
+
+# -------------------------------------------------------------
 # Instance wrappers (for contexts where the global class is unavailable)
 # -------------------------------------------------------------
 func trade_ase_to_ekwan_inst(ase_to_spend: int) -> Dictionary:
@@ -195,3 +296,9 @@ func deposit_ekwan_inst(amount: int) -> int:
 
 func try_spend_ekwan_inst(amount: int) -> Dictionary:
 	return try_spend_ekwan(amount)
+
+func apply_realm_stage_rewards_inst(reward: Dictionary, realm, stage) -> Dictionary:
+	return apply_realm_stage_rewards(reward, realm, stage)
+
+func apply_realm_completion_rewards_inst(reward: Dictionary, realm) -> Dictionary:
+	return apply_realm_completion_rewards(reward, realm)
