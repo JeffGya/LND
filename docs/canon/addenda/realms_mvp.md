@@ -40,7 +40,7 @@ All of this must obey:
 
 ### 2.1 RealmModel
 
-**File:** `core/world/RealmModel.gd`  
+**File:** `core/models/RealmModel.gd`  
 **Class:** `RealmModel`
 
 Fields (core MVP fields):
@@ -89,7 +89,7 @@ This keeps the model:
 
 ### 2.2 StageModel
 
-**File:** `core/world/StageModel.gd`  
+**File:** `core/model/StageModel.gd`  
 **Class:** `StageModel`
 
 Fields:

@@ -80,7 +80,9 @@ func _normalize_bucket(src: Array[Dictionary]) -> Array[Dictionary]:
 	for h in src:
 		if typeof(h) != TYPE_DICTIONARY:
 			continue
-		out.append(_normalize_hero_stats(h))
+		var normalized := _normalize_hero_stats(h)
+		normalized = _normalize_hero_emotion(normalized)
+		out.append(normalized)
 	return out
 
 func _normalize_hero_stats(hero: Dictionary) -> Dictionary:
@@ -115,12 +117,59 @@ func _normalize_hero_stats(hero: Dictionary) -> Dictionary:
 			s["eva"] = 0
 		if not s.has("crit") or typeof(s["crit"]) != TYPE_INT:
 			s["crit"] = 0
-		# Battle-state baselines
-		if not s.has("morale") or typeof(s["morale"]) != TYPE_INT:
-			s["morale"] = 50
-		if not s.has("fear") or typeof(s["fear"]) != TYPE_INT:
-			s["fear"] = 0
 		h["stats"] = s
+	return h
+
+func _normalize_hero_emotion(hero: Dictionary) -> Dictionary:
+	var h: Dictionary = hero.duplicate(true)
+
+	# Emotion block is the canonical home for morale/fear going forward.
+	# It is structured as:
+	#   emotion = {
+	#     "morale_base": int,
+	#     "morale_current": int,
+	#     "fear_current": int,
+	#   }
+
+	var e: Dictionary = {}
+	if h.has("emotion") and typeof(h["emotion"]) == TYPE_DICTIONARY:
+		e = (h["emotion"] as Dictionary).duplicate(true)
+	else:
+		e = {}
+
+	var stats_dict: Dictionary = {}
+	if h.has("stats") and typeof(h["stats"]) == TYPE_DICTIONARY:
+		stats_dict = h["stats"] as Dictionary
+
+	# If emotion is effectively empty but legacy stats.morale/fear exist, migrate them.
+	var has_emotion_keys := e.has("morale_base") or e.has("morale_current") or e.has("fear_current")
+	if not has_emotion_keys and not stats_dict.is_empty():
+		var base := 60
+		var current := 60
+		var fear := 5
+		if stats_dict.has("morale") and typeof(stats_dict["morale"]) == TYPE_INT:
+			base = int(stats_dict["morale"])
+			current = base
+		if stats_dict.has("fear") and typeof(stats_dict["fear"]) == TYPE_INT:
+			fear = int(stats_dict["fear"])
+		e["morale_base"] = base
+		e["morale_current"] = current
+		e["fear_current"] = fear
+
+	# Fill any missing fields with defaults (kept in sync with HeroModel).
+	if not e.has("morale_base") or typeof(e["morale_base"]) != TYPE_INT:
+		e["morale_base"] = 60
+	if not e.has("morale_current") or typeof(e["morale_current"]) != TYPE_INT:
+		e["morale_current"] = int(e["morale_base"])
+	if not e.has("fear_current") or typeof(e["fear_current"]) != TYPE_INT:
+		e["fear_current"] = 5
+
+	# Clamp values into allowed ranges.
+	e["morale_base"] = clamp(int(e["morale_base"]), 0, 100)
+	e["morale_current"] = clamp(int(e["morale_current"]), 0, 100)
+	e["fear_current"] = clamp(int(e["fear_current"]), 0, 100)
+
+	h["emotion"] = e
 	return h
 
 # -------------------------------------------------------------
@@ -136,6 +185,13 @@ func append_hero(hero: Dictionary) -> int:
 	var clean := hero.duplicate(true)
 	clean["id"] = _next_id
 	_next_id += 1
+
+	# Normalize combat stats and emotional state at the moment the hero enters the
+	# roster so that newly created heroes have consistent fields even before any
+	# save/load cycle.
+	clean = _normalize_hero_stats(clean)
+	clean = _normalize_hero_emotion(clean)
+
 	_active.append(clean)
 	return int(clean["id"]) 
 
@@ -157,6 +213,69 @@ func get_hero_by_id(id: int) -> Dictionary:
 		if int(h.get("id", -1)) == id:
 			return h.duplicate(true)
 	return {}
+
+# -------------------------------------------------------------
+# HeroModel API helper
+# -------------------------------------------------------------
+func get_hero_model_by_id(id: int) -> HeroModel:
+	## Convenience helper: return a HeroModel for the given hero id.
+	## This keeps HeroesIO as the persistence owner (dictionaries), while allowing
+	## higher-level systems (EmotionService, combat, Sanctum) to work with the
+	## structured HeroModel API.
+	var h := get_hero_by_id(id)
+	if h.is_empty():
+		return null
+	return HeroModel.from_dict(h)
+
+
+func update_hero_from_model(model: HeroModel) -> void:
+	## Replace the stored hero dictionary for the given model.id with the
+	## contents of model.to_dict(), if the hero exists in any roster bucket.
+	## This keeps HeroesIO as the single owner of hero storage while allowing
+	## services (like EmotionService) to modify heroes through HeroModel.
+	if model == null:
+		return
+
+	var hero_id := int(model.id)
+	var updated: Dictionary = model.to_dict()
+
+	# Search each roster bucket in turn and replace the matching hero entry.
+	for i in range(_active.size()):
+		var h_active := _active[i]
+		if typeof(h_active) != TYPE_DICTIONARY:
+			continue
+		var stored_id_active := int((h_active as Dictionary).get("id", -1))
+		if stored_id_active == hero_id:
+			_active[i] = updated
+			return
+
+	for i in range(_recovering.size()):
+		var h_rec := _recovering[i]
+		if typeof(h_rec) != TYPE_DICTIONARY:
+			continue
+		var stored_id_rec := int((h_rec as Dictionary).get("id", -1))
+		if stored_id_rec == hero_id:
+			_recovering[i] = updated
+			return
+
+	for i in range(_retired.size()):
+		var h_ret := _retired[i]
+		if typeof(h_ret) != TYPE_DICTIONARY:
+			continue
+		var stored_id_ret := int((h_ret as Dictionary).get("id", -1))
+		if stored_id_ret == hero_id:
+			_retired[i] = updated
+			return
+
+	for i in range(_fallen.size()):
+		var h_fall := _fallen[i]
+		if typeof(h_fall) != TYPE_DICTIONARY:
+			continue
+		var stored_id_fall := int((h_fall as Dictionary).get("id", -1))
+		if stored_id_fall == hero_id:
+			_fallen[i] = updated
+			return
+
 
 func count() -> int:
 	return _active.size()

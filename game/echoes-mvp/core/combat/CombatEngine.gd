@@ -45,9 +45,11 @@ func start_battle(battle_seed: int, allies: Array, enemies: Array[Dictionary], o
 		"result": {},
 		# Fractional damage carryover buckets (per-attacker); populated/used by ActionResolver when enabled.
 		"damage_bucket": {},
+		"emotion_baseline": {},
 	}
 	# Apply any persisted morale overrides into the freshly built state
 	_apply_morale_overrides()
+	_capture_emotion_baseline()
 
 ## Steps one round through INITIATIVE → SELECT → RESOLVE → TICK → CHECK.
 ## Returns a snapshot for logging/inspection.
@@ -354,14 +356,29 @@ func _normalize_allies(allies: Array) -> Array[Dictionary]:
 			TYPE_DICTIONARY:
 				var d_in: Dictionary = a
 				# Ensure minimal shape; keep existing stats if present
-				if not d_in.has("id"): d_in["id"] = 0
+				if not d_in.has("id"):
+					d_in["id"] = 0
 				var d_out: Dictionary = d_in
 				if not d_out.has("stats") or typeof(d_out["stats"]) != TYPE_DICTIONARY:
 					d_out["stats"] = _fallback_stats_from_balance()
 				else:
 					d_out["stats"] = _fill_missing_stats_with_balance(d_out["stats"])
-				if not d_out.has("fear"): d_out["fear"] = 0
-				if not d_out.has("status"): d_out["status"] = "idle"
+				if not d_out.has("fear"):
+					d_out["fear"] = 0
+				if not d_out.has("status"):
+					d_out["status"] = "idle"
+
+				# MVP hook: if EmotionService is available, hydrate morale/fear
+				# for allies provided as dictionaries, so they still start from
+				# the persisted emotional state rather than hardcoded defaults.
+				var ent_id2: int = int(d_out.get("id", 0))
+				if d_out.has("stats") and typeof(d_out["stats"]) == TYPE_DICTIONARY and ent_id2 > 0:
+					var stats2: Dictionary = d_out["stats"]
+					var fear2: int = int(d_out.get("fear", 0))
+					var fear_hydrated: int = _hydrate_emotion_from_service(ent_id2, stats2, fear2)
+					d_out["stats"] = stats2
+					d_out["fear"] = fear_hydrated
+
 				out.append(d_out)
 			_:
 				pass
@@ -499,14 +516,51 @@ static func _to_combat_entity(hero: Dictionary, fallback_id: int) -> Dictionary:
 	if hero.has("stats") and typeof(hero["stats"]) == TYPE_DICTIONARY:
 		stats_in = hero["stats"]
 	var stats_out: Dictionary = _fill_missing_stats(stats_in) if stats_in.size() > 0 else _fallback_stats()
+
+	# MVP hook: hydrate initial morale/fear for this hero from EmotionService
+	# when available, so combat always starts from the persisted emotional state.
+	var fear_val: int = int(hero.get("fear", 0))
+	if ent_id > 0:
+		fear_val = _hydrate_emotion_from_service(ent_id, stats_out, fear_val)
+
 	return {
 		"id": ent_id,
 		"name": name_s,
 		"archetype": arch_s,
 		"stats": stats_out,
-		"fear": int(hero.get("fear", 0)),
+		"fear": fear_val,
 		"status": String(hero.get("status", "idle")),
 	}
+# Pull morale/fear for a hero from EmotionService when available.
+# Returns the final fear value written into stats (so callers can mirror it
+# into the flat `fear` field on the combat entity).
+static func _hydrate_emotion_from_service(ent_id: int, stats: Dictionary, fallback_fear: int) -> int:
+	var fear_val: int = fallback_fear
+
+	# Try to locate EmotionService via the SaveService singleton/autoload.
+	var emo: Variant = null
+	if Engine.has_singleton("SaveService"):
+		var svc: Variant = Engine.get_singleton("SaveService")
+		if svc and svc.has_method("emotion_get_service"):
+			emo = svc.call("emotion_get_service")
+	elif typeof(SaveService) != TYPE_NIL and SaveService.has_method("emotion_get_service"):
+		emo = SaveService.emotion_get_service()
+
+	if emo == null:
+		# No emotion system wired yet; keep whatever was passed in.
+		return fear_val
+
+	# Morale: source of truth is EmotionService; clamp to 0..100 for safety.
+	if emo.has_method("get_morale"):
+		var m_val: int = int(emo.call("get_morale", ent_id))
+		stats[EchoConstants.STAT_MORALE] = max(0, min(100, m_val))
+
+	# Fear: same pattern; also mirror into STAT_FEAR for consistency.
+	if emo.has_method("get_fear"):
+		fear_val = max(0, min(100, int(emo.call("get_fear", ent_id))))
+		stats[EchoConstants.STAT_FEAR] = fear_val
+
+	return fear_val
 
 static func _fallback_stats() -> Dictionary:
 	# Safe typed defaults for when hero has no stats (older saves or bad data).
@@ -684,6 +738,9 @@ func _check_end() -> Dictionary:
 
 	if _state.over:
 		_state.result = {"victory": victory, "reason": reason}
+		var emo_result: Dictionary = _build_emotion_result()
+		if emo_result.size() > 0:
+			_state.result["emotion"] = emo_result
 		return _state.result
 	else:
 		return {"ongoing": true}
@@ -694,6 +751,76 @@ func _alive_count(group: Array[Dictionary]) -> int:
 		if _entity_alive(ent):
 			c += 1
 	return c
+
+#
+# --- Emotion baselines & result packaging ------------------------------------
+## Capture starting morale/fear for all allies at the beginning of a battle.
+## This is called once after start_battle has hydrated entities and applied
+## any morale overrides, so it represents the true combat starting point.
+func _capture_emotion_baseline() -> void:
+	var baseline: Dictionary = {}
+	for a in _state.get("allies", []):
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var ent: Dictionary = a
+		var hero_id: int = int(ent.get("id", -1))
+		if hero_id <= 0:
+			continue
+		var start_morale: int = _get_morale(ent)
+		var start_fear: int = int(ent.get("fear", 0))
+		baseline[hero_id] = {
+			"morale": start_morale,
+			"fear": start_fear,
+		}
+	_state["emotion_baseline"] = baseline
+
+## Build a structured emotion result payload comparing final vs baseline
+## morale/fear. Consumers (ObjectiveRunner, debug harness) can pass this to
+## EmotionService to persist deltas across the campaign.
+func _build_emotion_result() -> Dictionary:
+	var heroes: Dictionary = {}
+	var baseline: Dictionary = _state.get("emotion_baseline", {})
+	for a in _state.get("allies", []):
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var ent: Dictionary = a
+		var hero_id: int = int(ent.get("id", -1))
+		if hero_id <= 0:
+			continue
+
+		# Baseline values; if missing, treat current as baseline so deltas are 0.
+		var base: Dictionary = {}
+		if baseline.has(hero_id):
+			base = baseline[hero_id]
+		var start_morale: int = 0
+		var start_fear: int = 0
+		if base.has("morale"):
+			start_morale = int(base.get("morale", 0))
+		else:
+			start_morale = _get_morale(ent)
+		if base.has("fear"):
+			start_fear = int(base.get("fear", 0))
+		else:
+			start_fear = int(ent.get("fear", 0))
+
+		var final_morale: int = _get_morale(ent)
+		var final_fear: int = int(ent.get("fear", 0))
+
+		var morale_delta: int = final_morale - start_morale
+		var fear_delta: int = final_fear - start_fear
+
+		heroes[hero_id] = {
+			"start_morale": start_morale,
+			"final_morale": final_morale,
+			"morale_delta": morale_delta,
+			"start_fear": start_fear,
+			"final_fear": final_fear,
+			"fear_delta": fear_delta,
+		}
+
+	if heroes.size() == 0:
+		return {}
+	return {"heroes": heroes}
 
 # --- Morale override API (persist across fights for QA/debug) ---------------
 ## Set/Update a morale override for an entity id. Also updates current state if present.

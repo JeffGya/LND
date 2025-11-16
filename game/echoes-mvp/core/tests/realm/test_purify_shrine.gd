@@ -9,8 +9,8 @@ extends Node
 # exercise success / failure paths and shrine HP logic.
 
 const ObjectiveRunnerScript = preload("res://core/world/ObjectiveRunner.gd")
-const RealmModel            = preload("res://core/world/RealmModel.gd")
-const StageModel            = preload("res://core/world/StageModel.gd")
+const RealmModel            = preload("res://core/models/RealmModel.gd")
+const StageModel            = preload("res://core/models/StageModel.gd")
 const GameBalance_Realm     = preload("res://core/config/GameBalance_Realm.gd")
 
 const TAG := "[test_purify_shrine]"

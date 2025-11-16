@@ -13,8 +13,8 @@ extends RefCounted
 ## *shape* of the reward curves, so we can freely tune balance constants
 ## without rewriting tests.
 
-const RealmModel = preload("res://core/world/RealmModel.gd")
-const StageModel = preload("res://core/world/StageModel.gd")
+const RealmModel = preload("res://core/models/RealmModel.gd")
+const StageModel = preload("res://core/models/StageModel.gd")
 const RealmRewardCalc = preload("res://core/world/RealmRewardCalc.gd")
 const GameBalance_Realm = preload("res://core/config/GameBalance_Realm.gd")
 

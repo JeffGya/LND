@@ -33,7 +33,13 @@ var _content_hash: String = ""   # SHA-256 of JSON with content_hash cleared
 var _integrity_signed: bool = false
 
 # Heroes roster module (instance-based)
+# Heroes roster module (instance-based)
 var _heroes_io: HeroesIO = HeroesIO.new()
+
+# Central emotional state service (morale & fear per hero).
+# Owned by SaveService so it can operate on the same HeroesIO instance that
+# backs the hero_roster in the save file.
+var _emotion_service: EmotionService = EmotionService.new()
 
 # -------------------------------------------------------------
 # Signals
@@ -45,8 +51,14 @@ signal economy_changed(kind: String, delta: int, new_value: int)
 # Lifecycle hooks
 # -------------------------------------------------------------
 func _ready() -> void:
-	# No-op on boot. You can call new_game() from a menu.
-	pass
+	# Bootstrap EmotionService against the same HeroesIO instance used for
+	# hero_roster. This gives the service a stable view of heroes across
+	# new_game(), load_game(), and runtime changes.
+	if _emotion_service != null:
+		_emotion_service.setup(_heroes_io)
+	else:
+		push_warning("[SaveService] EmotionService instance is null in _ready().")
+	# Other boot-time work (e.g. calling new_game()) can be triggered from menus.
 
 # -------------------------------------------------------------
 # Public API
@@ -214,6 +226,13 @@ func heroes_list() -> Array:
 
 func hero_get(id: int) -> Dictionary:
 	return _heroes_io.get_hero_by_id(id)
+
+## EmotionService accessors (central emotional state)
+func emotion_get_service() -> EmotionService:
+	## Returns the singleton EmotionService instance used for this campaign.
+	## Other systems (combat, shrine, debug console) should call into this
+	## rather than reading/writing morale/fear directly on hero dictionaries.
+	return _emotion_service
 
 ## Persistently set an individual hero's fear (0..100) in the hero_roster block.
 ## Used by debug/QA commands so that the next combat picks up the same value.

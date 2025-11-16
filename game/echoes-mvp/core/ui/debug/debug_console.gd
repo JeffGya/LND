@@ -1139,7 +1139,60 @@ func _register_default_commands() -> void:
 		_print_line("[test_economy] expected=%.5f diff=%.5f tol=%.5f -> %s" % [expected, diff, tol, ("PASS" if ok else "FAIL")])
 		return 0 if ok else 1
 
-		# --- Emotions quick read ------------------------------------------------
+	# Temporary: quick EmotionService wiring smoke test
+	_commands["/emotion_test"] = func(_args: Array) -> int:
+		# Sanity check: make sure SaveService and its helpers exist.
+		if not has_node("/root/SaveService"):
+			_print_line("[emotion_test] SaveService not found at /root/SaveService")
+			return 1
+		var ss := get_node("/root/SaveService")
+		if not ss.has_method("heroes_list"):
+			_print_line("[emotion_test] SaveService.heroes_list() not available")
+			return 1
+		if not ss.has_method("emotion_get_service"):
+			_print_line("[emotion_test] EmotionService not wired on SaveService (emotion_get_service missing)")
+			return 1
+
+		# Pick the first hero in the roster as our test subject.
+		var roster: Array = ss.heroes_list()
+		if roster.is_empty():
+			_print_line("[emotion_test] No heroes in roster; summon or start a new game first.")
+			return 1
+		var first: Dictionary = roster[0]
+		var hero_id: int = int(first.get("id", -1))
+		if hero_id <= 0:
+			_print_line("[emotion_test] First hero has invalid id; cannot continue.")
+			return 1
+
+		# Fetch the EmotionService instance and read current values.
+		var emo = ss.emotion_get_service()
+		if emo == null:
+			_print_line("[emotion_test] EmotionService instance is null.")
+			return 1
+		if not (emo.has_method("get_morale") and emo.has_method("get_fear") and emo.has_method("apply_delta")):
+			_print_line("[emotion_test] EmotionService is missing expected methods (get_morale/get_fear/apply_delta).")
+			return 1
+
+		var morale_before: int = int(emo.get_morale(hero_id))
+		var fear_before: int = int(emo.get_fear(hero_id))
+		_print_line("[emotion_test] Hero %d BEFORE — morale=%d, fear=%d" % [hero_id, morale_before, fear_before])
+
+		# Apply a small, clearly-labelled morale bump so we can see persistence.
+		var morale_delta: int = 5
+		emo.apply_delta(hero_id, morale_delta, 0, "debug_emotion_test")
+
+		var morale_after: int = int(emo.get_morale(hero_id))
+		var fear_after: int = int(emo.get_fear(hero_id))
+		_print_line("[emotion_test] Hero %d AFTER  — morale=%d, fear=%d (Δmorale=%+d)" % [
+			hero_id,
+			morale_after,
+			fear_after,
+			morale_after - morale_before
+		])
+
+		return 0
+
+	# --- Emotions quick read ------------------------------------------------
 	_commands["/get_faith"] = func(_args: Array) -> int:
 		var val: int = -1
 		if has_node("/root/SaveService") and get_node("/root/SaveService").has_method("emotions_get_faith"):
@@ -1192,6 +1245,175 @@ func _register_default_commands() -> void:
 			_print_line("SaveService not available; cannot persist faith")
 			return 1
 
+	# --- Emotions hero-level debug ------------------------------------------
+	_commands["/get_morale"] = func(args: Array) -> int:
+		# Usage: /get_morale [hero_id?]
+		if not has_node("/root/SaveService"):
+			_print_line("[get_morale] SaveService not found at /root/SaveService")
+			return 1
+		var ss := get_node("/root/SaveService")
+		if not ss.has_method("emotion_get_service"):
+			_print_line("[get_morale] EmotionService not available on SaveService")
+			return 1
+		var emo: Object = ss.emotion_get_service()
+		if emo == null:
+			_print_line("[get_morale] EmotionService instance is null.")
+			return 1
+		if not (emo.has_method("get_morale") and emo.has_method("get_fear")):
+			_print_line("[get_morale] EmotionService missing get_morale/get_fear methods")
+			return 1
+
+		var print_one: Callable = func(h: Dictionary) -> void:
+			var id_i: int = int(h.get("id", -1))
+			if id_i <= 0:
+				return
+			var name_s := String(h.get("name", "?"))
+			var morale_i: int = int(emo.get_morale(id_i))
+			var fear_i: int = int(emo.get_fear(id_i))
+			_print_line("[emotion] Hero %d (%s) — morale=%d, fear=%d" % [id_i, name_s, morale_i, fear_i])
+
+		if args.size() == 0:
+			if not ss.has_method("heroes_list"):
+				_print_line("[get_morale] SaveService.heroes_list() not available")
+				return 1
+			var roster: Array = ss.heroes_list()
+			if roster.is_empty():
+				_print_line("[get_morale] No heroes in roster.")
+				return 0
+			_print_line("[get_morale] listing morale/fear for %d heroes:" % roster.size())
+			for h in roster:
+				if typeof(h) == TYPE_DICTIONARY:
+					print_one.call(h)
+			return 0
+
+		var s_id := String(args[0])
+		if not s_id.is_valid_int():
+			_print_line("[get_morale] Usage: /get_morale [hero_id]")
+			return 1
+		var id := int(s_id)
+		if not ss.has_method("hero_get"):
+			_print_line("[get_morale] SaveService.hero_get() not available")
+			return 1
+		var h_one: Dictionary = ss.hero_get(id)
+		if h_one.is_empty():
+			_print_line("[get_morale] No hero with id %d" % id)
+			return 1
+		print_one.call(h_one)
+		return 0
+
+	# For now, /get_fear is an alias to /get_morale (it prints both morale and fear).
+	_commands["/get_fear"] = _commands["/get_morale"]
+
+	_commands["/set_morale"] = func(args: Array) -> int:
+		# Usage: /set_morale <hero_id:int> <value:int>
+		if args.size() < 2:
+			_print_line("Usage: /set_morale <hero_id:int> <value:int>")
+			return 1
+		if not has_node("/root/SaveService"):
+			_print_line("[set_morale] SaveService not found at /root/SaveService")
+			return 1
+		var ss := get_node("/root/SaveService")
+		if not ss.has_method("emotion_get_service"):
+			_print_line("[set_morale] EmotionService not available on SaveService")
+			return 1
+		var emo: Object = ss.emotion_get_service()
+		if emo == null:
+			_print_line("[set_morale] EmotionService instance is null.")
+			return 1
+		if not (emo.has_method("get_morale") and emo.has_method("apply_delta")):
+			_print_line("[set_morale] EmotionService missing get_morale/apply_delta")
+			return 1
+
+		var id_str := String(args[0])
+		var val_str := String(args[1])
+		if not id_str.is_valid_int():
+			_print_line("[set_morale] hero_id must be an integer")
+			return 1
+		if not (val_str.is_valid_int() or val_str.is_valid_float()):
+			_print_line("[set_morale] value must be a number")
+			return 1
+
+		var hero_id := int(id_str)
+		if hero_id <= 0:
+			_print_line("[set_morale] hero_id must be > 0")
+			return 1
+		if not ss.has_method("hero_get"):
+			_print_line("[set_morale] SaveService.hero_get() not available")
+			return 1
+		var hero_dict: Dictionary = ss.hero_get(hero_id)
+		if hero_dict.is_empty():
+			_print_line("[set_morale] No hero with id %d" % hero_id)
+			return 1
+
+		var target_raw := int(float(val_str))
+		var target := clampi(target_raw, 0, 100)
+		var current := int(emo.get_morale(hero_id))
+		var delta := target - current
+		if delta == 0:
+			_print_line("[set_morale] Hero %d already has morale=%d" % [hero_id, current])
+			return 0
+
+		emo.apply_delta(hero_id, delta, 0, "debug_set_morale")
+		var after := int(emo.get_morale(hero_id))
+		var name_s2 := String(hero_dict.get("name", "?"))
+		_print_line("[emotion] Hero %d (%s) — morale %d → %d (Δ%+d)" % [hero_id, name_s2, current, after, after - current])
+		return 0
+
+	_commands["/set_fear"] = func(args: Array) -> int:
+		# Usage: /set_fear <hero_id:int> <value:int>
+		if args.size() < 2:
+			_print_line("Usage: /set_fear <hero_id:int> <value:int>")
+			return 1
+		if not has_node("/root/SaveService"):
+			_print_line("[set_fear] SaveService not found at /root/SaveService")
+			return 1
+		var ss := get_node("/root/SaveService")
+		if not ss.has_method("emotion_get_service"):
+			_print_line("[set_fear] EmotionService not available on SaveService")
+			return 1
+		var emo: Object = ss.emotion_get_service()
+		if emo == null:
+			_print_line("[set_fear] EmotionService instance is null.")
+			return 1
+		if not (emo.has_method("get_fear") and emo.has_method("apply_delta")):
+			_print_line("[set_fear] EmotionService missing get_fear/apply_delta")
+			return 1
+
+		var id_str2 := String(args[0])
+		var val_str2 := String(args[1])
+		if not id_str2.is_valid_int():
+			_print_line("[set_fear] hero_id must be an integer")
+			return 1
+		if not (val_str2.is_valid_int() or val_str2.is_valid_float()):
+			_print_line("[set_fear] value must be a number")
+			return 1
+
+		var hero_id2 := int(id_str2)
+		if hero_id2 <= 0:
+			_print_line("[set_fear] hero_id must be > 0")
+			return 1
+		if not ss.has_method("hero_get"):
+			_print_line("[set_fear] SaveService.hero_get() not available")
+			return 1
+		var hero_dict2: Dictionary = ss.hero_get(hero_id2)
+		if hero_dict2.is_empty():
+			_print_line("[set_fear] No hero with id %d" % hero_id2)
+			return 1
+
+		var target_raw2 := int(float(val_str2))
+		var target2 := clampi(target_raw2, 0, 100)
+		var current2 := int(emo.get_fear(hero_id2))
+		var delta2 := target2 - current2
+		if delta2 == 0:
+			_print_line("[set_fear] Hero %d already has fear=%d" % [hero_id2, current2])
+			return 0
+
+		emo.apply_delta(hero_id2, 0, delta2, "debug_set_fear")
+		var after2 := int(emo.get_fear(hero_id2))
+		var name_s3 := String(hero_dict2.get("name", "?"))
+		_print_line("[emotion] Hero %d (%s) — fear %d → %d (Δ%+d)" % [hero_id2, name_s3, current2, after2, after2 - current2])
+		return 0
+
 	# --- Ase multiplier debug -----------------------------------------------
 	_commands["/ase_multiplier"] = func(_args: Array) -> int:
 		var svc := _find_ase_service()
@@ -1213,7 +1435,7 @@ func _register_default_commands() -> void:
 	# --- Test runner -----------------------------------------------------------
 	_commands["/run_tests"] = func(args: Array) -> int:
 		if args.size() == 0:
-			_print_line("Usage: /run_tests <economy|realms|all>")
+			_print_line("Usage: /run_tests <economy|realms|emotion|all>")
 			return 1
 		var suite := String(args[0]).to_lower()
 		match suite:
@@ -1263,6 +1485,41 @@ func _register_default_commands() -> void:
 				# NOTE: realm tests report PASS/FAIL via push_error; we return 0 here.
 				return 0
 
+			"emotion":
+				# Run the EmotionService-focused suite in core/tests/emotion/test_emotion_service.gd
+				var emo_script = load("res://core/tests/emotion/test_emotion_service.gd")
+				if emo_script == null:
+					_print_line("[run_tests] emotion: script not found at core/tests/emotion/test_emotion_service.gd")
+					return 1
+				var T_emo = emo_script.new()
+				if not T_emo.has_method("run_all"):
+					_print_line("[run_tests] emotion: run_all() not found on test instance")
+					return 1
+				_print_line("[run_tests] emotion: starting EmotionService tests…")
+				T_emo.run_all()
+				# Also run the Combat ↔ Emotion integration tests if available
+				var combat_script = load("res://core/tests/combat/test_combat_emotion_integration.gd")
+				if combat_script == null:
+					combat_script = load("res://core/tests/emotion/test_combat_emotion_integration.gd")
+					if combat_script == null:
+						_print_line("[run_tests] emotion: combat integration script not found at core/tests/combat/ or core/tests/emotion/")
+					else:
+						_print_line("[run_tests] emotion: combat integration script loaded from core/tests/emotion/test_combat_emotion_integration.gd")
+				else:
+					_print_line("[run_tests] emotion: combat integration script loaded from core/tests/combat/test_combat_emotion_integration.gd")
+
+				if combat_script != null:
+					var T_combat = combat_script.new()
+					if T_combat.has_method("run_all"):
+						_print_line("[run_tests] emotion: starting Combat ↔ Emotion integration tests…")
+						T_combat.run_all()
+						_print_line("[run_tests] emotion: Combat ↔ Emotion integration tests complete.")
+					else:
+						_print_line("[run_tests] emotion: combat integration test missing run_all(), skipping.")
+
+				_print_line("[run_tests] emotion: completed (see PASS/FAIL lines above).")
+				return 0
+
 			"all":
 				# Run the existing economy suite via TestRunner
 				var res: Dictionary = TestRunner.run_all(true)
@@ -1272,6 +1529,32 @@ func _register_default_commands() -> void:
 				var total2 := int(totals2.get("total", 0))
 				var failed2 := int(totals2.get("failed", total2 - passed2))
 				_print_line("[run_tests] economy: %d/%d PASS%s" % [passed2, total2, ("" if failed2 == 0 else " (" + str(failed2) + " FAIL)")])
+				# Also run the EmotionService suite as part of 'all' for coverage
+				var emo_script_all = load("res://core/tests/emotion/test_emotion_service.gd")
+				if emo_script_all != null:
+					var T_emo_all = emo_script_all.new()
+					if T_emo_all.has_method("run_all"):
+						_print_line("[run_tests] emotion: starting EmotionService tests…")
+						T_emo_all.run_all()
+						# Then run the Combat ↔ Emotion integration tests if available
+						var combat_script_all = load("res://core/tests/combat/test_combat_emotion_integration.gd")
+						if combat_script_all == null:
+							combat_script_all = load("res://core/tests/emotion/test_combat_emotion_integration.gd")
+							if combat_script_all == null:
+								_print_line("[run_tests] emotion: combat integration script not found at core/tests/combat/ or core/tests/emotion/")
+							else:
+								_print_line("[run_tests] emotion: combat integration script loaded from core/tests/emotion/test_combat_emotion_integration.gd")
+						else:
+							_print_line("[run_tests] emotion: combat integration script loaded from core/tests/combat/test_combat_emotion_integration.gd")
+
+						if combat_script_all != null:
+							var T_combat_all = combat_script_all.new()
+							if T_combat_all.has_method("run_all"):
+								_print_line("[run_tests] emotion: starting Combat ↔ Emotion integration tests…")
+								T_combat_all.run_all()
+								_print_line("[run_tests] emotion: Combat ↔ Emotion integration tests complete.")
+							else:
+								_print_line("[run_tests] emotion: combat integration test missing run_all(), skipping.")
 				# Also run realm determinism tests as part of "all" for extra coverage
 				var T2 = load("res://core/tests/realm/test_realm_generation.gd")
 				if T2 != null and T2.has_method("run_all"):
@@ -1291,7 +1574,7 @@ func _register_default_commands() -> void:
 				return 0 if failed2 == 0 else 2
 
 			_:
-				_print_line("Usage: /run_tests <economy|realms|all>")
+				_print_line("Usage: /run_tests <economy|realms|emotion|all>")
 				return 1
 
 	# --- Telemetry controls ---------------------------------------------------

@@ -110,6 +110,12 @@ static func _run_combat_trial(
 	var success: bool = bool(combat_result.get("success", true))
 	result["success"] = success
 	result["combat"] = combat_result
+
+	# Propagate per-hero emotion changes from the combat result into the
+	# global EmotionService so that realms/shrine can build on persistent
+	# morale/fear across the campaign.
+	_apply_combat_emotion_result(realm, stage, hero_party, combat_result, "realm_combat_trial")
+
 	return result
 
 
@@ -181,6 +187,16 @@ static func _run_purify_shrine(
 		combat_result["wave_index"] = wave_index
 		waves_results.append(combat_result)
 
+		# Propagate per-hero emotion changes from this wave into EmotionService
+		# so subsequent waves and future stages start from the updated state.
+		_apply_combat_emotion_result(
+			realm,
+			stage,
+			hero_party,
+			combat_result,
+			"purify_shrine_wave_%d" % (wave_index + 1)
+		)
+
 		var wave_success: bool = bool(combat_result.get("success", true))
 		if not wave_success:
 			# Party wiped (or harness reported failure) in this wave.
@@ -221,3 +237,67 @@ static func _run_purify_shrine(
 	}
 
 	return result
+
+## Internal helper: apply per-hero emotion deltas from a combat result
+## into EmotionService, if available. This keeps ObjectiveRunner focused
+## on coordination while delegating clamping and storage to the service.
+static func _apply_combat_emotion_result(
+		realm: RealmModel,
+		stage: StageModel,
+		hero_party: Array,
+		combat_result: Dictionary,
+		source_label: String
+	) -> void:
+	if combat_result.is_empty():
+		return
+	if not combat_result.has("emotion"):
+		return
+	var emo_block: Dictionary = combat_result["emotion"]
+	if typeof(emo_block) != TYPE_DICTIONARY:
+		return
+	if not emo_block.has("heroes"):
+		return
+	var heroes_dict: Dictionary = emo_block["heroes"]
+	if typeof(heroes_dict) != TYPE_DICTIONARY or heroes_dict.size() == 0:
+		return
+
+	# Obtain EmotionService via the SaveService autoload/global, if present.
+	var emo: Variant = null
+	if typeof(SaveService) != TYPE_NIL and SaveService.has_method("emotion_get_service"):
+		emo = SaveService.emotion_get_service()
+	if emo == null:
+		return
+
+	for hero_id_key in heroes_dict.keys():
+		var hero_id := int(hero_id_key)
+		var payload: Dictionary = heroes_dict[hero_id_key]
+		if typeof(payload) != TYPE_DICTIONARY:
+			continue
+
+		var morale_delta: int = int(payload.get("morale_delta", 0))
+		var fear_delta: int = int(payload.get("fear_delta", 0))
+		if morale_delta == 0 and fear_delta == 0:
+			continue
+
+		var ctx := "combat:%s:realm=%s:stage=%d:type=%s" % [
+			source_label,
+			realm.id if realm != null else "",
+			stage.index if stage != null else -1,
+			stage.objective_type if stage != null else "",
+		]
+
+		emo.apply_delta(hero_id, morale_delta, fear_delta, ctx)
+
+		# For readability while scanning logs, show the applied deltas and
+		# the resulting stored values.
+		var morale_after: int = 0
+		var fear_after: int = 0
+		if emo.has_method("get_morale"):
+			morale_after = int(emo.get_morale(hero_id))
+		if emo.has_method("get_fear"):
+			fear_after = int(emo.get_fear(hero_id))
+
+		print(
+			"[emotion] %s hero=%d Δmorale=%d Δfear=%d => morale=%d fear=%d"
+			% [ctx, hero_id, morale_delta, fear_delta, morale_after, fear_after]
+		)
