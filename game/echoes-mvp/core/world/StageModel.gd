@@ -33,6 +33,37 @@ var encounter_seed: int = 0
 #  - "fear_delta": int          # how much this stage tends to raise/lower fear
 #  - "env_tags": Array[String]  # e.g. ["dust", "whispers"]
 #  - "reward_bonus": float      # minor Ase/Ekwan adjustments
+#
+# Purify Shrine (objective_type == "purify_shrine") expected modifier keys:
+#   - "shrine_waves": int
+#         Number of combat waves for this shrine stage.
+#         MVP uses 2, sourced from GameBalance_Realm.get_purify_waves().
+#
+#   - "morale_drain_per_wave": int
+#         Amount of morale each participating hero loses after
+#         each successful wave. Tier-scaled value provided by
+#         GameBalance_Realm.get_purify_morale_drain(stage_tier).
+#
+#   - "shrine_reward_multiplier": float
+#         Multiplier applied to the standard stage rewards for
+#         shrines. Tier-scaled via
+#         GameBalance_Realm.get_purify_reward_mult(stage_tier).
+#
+#   - "shrine_hp_max": int
+#         Max HP for the shrine in this stage. Derived from
+#         GameBalance_Realm.get_purify_shrine_hp(stage_tier) and used
+#         by ObjectiveRunner to approximate the shrine "timer" at the
+#         stage level.
+#
+#   - "shrine_passive_drain_per_wave": int
+#         Amount of shrine HP lost automatically after each completed
+#         wave. Derived from
+#         GameBalance_Realm.get_purify_shrine_passive_drain_per_wave(stage_tier).
+#         Per-round drain and an explicit shrine entity will be added
+#         in the Combat Simulation Core epic.
+#
+# These keys allow ObjectiveRunner, Morale systems, and
+# RealmRewardCalc to behave correctly without hard-coded numbers.
 var modifiers: Dictionary = {}
 
 # Runtime progress flag. Stored here so save/load can reconstruct

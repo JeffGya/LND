@@ -110,81 +110,82 @@ Fields:
 
 - `modifiers: Dictionary`  
   Misc modifiers. MVP examples:
+
   - `"fear_delta": int` — how much fear pressure this stage applies.  
   - Later: `"env_tags"`, `"special_rules"`, etc.
+
+  
+  For **purify_shrine** stages (when `objective_type == "purify_shrine"`), the generator is expected to populate:
+  - `"shrine_waves"` (int) — number of combat waves for this shrine stage (MVP: 2, from `GameBalance_Realm.get_purify_waves()`).
+  - `"morale_drain_per_wave"` (int) — amount of morale each participating hero loses after each successful wave, tier-scaled via `GameBalance_Realm.get_purify_morale_drain(tier)`.
+  - `"shrine_reward_multiplier"` (float) — multiplier applied to the standard stage rewards for shrines, tier-scaled via `GameBalance_Realm.get_purify_reward_mult(tier)`.
+  
+  These keys allow ObjectiveRunner, the morale system, and RealmRewardCalc to behave correctly without hard-coded shrine numbers, while keeping StageModel itself generic.
 
 StageModels are pure data: they do not own any combat or economy logic themselves. They are consumed by the **ObjectiveRunner**, the **EnemyFactory**, and the **RealmRewardCalc**.
 
 ---
 
 ## 3. Realm balance config (GameBalance_Realm)
+### 3.1 Purify Shrine objective (MVP)
 
-**File:** `core/config/GameBalance_Realm.gd`
+The `purify_shrine` objective is a **two-wave survival trial** with fully deterministic shrine-specific parameters defined in `StageModel.modifiers`.
 
-This file is the **single source of truth** for Realm-related knobs. Core MVP elements:
+#### Core rules (MVP)
 
-- `REALM_LIST: Dictionary`  
-  Map of `realm_id` → `{ name, virtue, default_tier }`.
+- **Two waves**
+  - Exactly **2 waves** per shrine stage (no variation in MVP).
+  - Same party is used for both waves.
+  - KO’d heroes **remain KO’d** between waves.
 
-  Example (conceptual):
+- **Shrine HP system**
+  Shrine stages now include HP tracking:
+  - `shrine_hp_max` — maximum shrine HP.
+  - `shrine_passive_drain_per_wave` — guaranteed shrine HP loss after each wave.
+  - If shrine HP reaches **0 at any time**, the stage **fails immediately**, even if that combat wave was won.
 
-  ```gdscript
-  const REALM_LIST := {
-      "vale_of_dust": {
-          "name": "Vale of Dust",
-          "virtue": "courage",
-          "default_tier": 1,
-      },
-      "shrouded_grove": {
-          "name": "Shrouded Grove",
-          "virtue": "wisdom",
-          "default_tier": 1,
-      },
-  }
-  ```
+- **Combat flow**
+  1. **Wave 1**  
+     - Uses `stage.encounter_seed`.
+     - If party wipes → **failure**.
+     - Apply shrine passive drain.
+  2. **Wave 2**  
+     - Uses deterministic seed: `encounter_seed + 1`.
+     - If party wipes → **failure**.
+     - Apply shrine passive drain.
+  3. **Success condition**  
+     - Party survives both waves.
+     - Shrine HP > 0 after the final drain.
 
-- `REALM_STAGE_COUNT: int = 5`  
-  Fixed MVP stage count per Realm.  
-  Future: this can become a per-realm or per-tier curve, but tests currently assume a 5-stage MVP layout.
+- **Morale integration (MVP placeholder)**
+  - `morale_drain_per_wave` exists and is seeded into modifiers.
+  - Actual morale-reduction logic will be completed in the **Emotion & Morale Core mini-epic**.
+  - Currently logged but not applied to hero morale.
 
-- `REALM_OBJECTIVE_WEIGHTS: Dictionary`  
-  Per realm, defines how likely each objective type is when seeding the Realm.
+- **Rewards**
+  - Shrine rewards use normal reward calculation plus:
+    - `shrine_reward_multiplier` (tier-scaled: e.g., 1.1 / 1.2 / 1.3).
+  - This makes shrines slightly more rewarding than standard `combat_trial` stages.
 
-  Example shape:
+#### Shrine-specific StageModel modifiers
 
-  ```gdscript
-  const REALM_OBJECTIVE_WEIGHTS := {
-      "vale_of_dust": {
-          "combat_trial": 3,
-          "purify_shrine": 1,
-      },
-      "shrouded_grove": {
-          "combat_trial": 2,
-          "purify_shrine": 2,
-      },
-  }
-  ```
+`RealmGenerator` populates these keys for shrine stages:
 
-- `TIER_SCALARS`  
-  Scalar curves for tier-based modifications, e.g.:
+| Key                               | Type   | Meaning |
+|-----------------------------------|--------|---------|
+| `"fear_delta"`                    | int    | Fear pressure for the stage |
+| `"shrine_waves"`                  | int    | Always 2 in MVP |
+| `"shrine_hp_max"`                 | int    | Maximum shrine HP |
+| `"shrine_passive_drain_per_wave"` | int    | Passive HP loss per wave |
+| `"morale_drain_per_wave"`         | int    | Configured, integration pending |
+| `"shrine_reward_multiplier"`      | float  | Multiplier applied to rewards |
 
-  - `enemy_power`  
-  - `fear_pressure`  
-  - `ekwan_drop`  
-  - `ase_reward`
+#### Determinism
 
-  These are aligned with Balance Curve §12 and ensure monotonic scaling (higher tiers never pay less than lower tiers).
-
-- `REWARD_BASE`  
-  Base reward template: `{ ase: X, ekwan: Y, relic_weights: {...} }`  
-  Used by `RealmRewardCalc` to compute per-stage and completion rewards.
-
-Accessors from this file are used by both:
-
-- `RealmGenerator` (for layout, stage types, and fear modifiers).  
-- `RealmRewardCalc` (for Ase/Ekwan and relic probabilities).
-
----
+- Wave seeds are always:  
+  - Wave 0 → `encounter_seed`  
+  - Wave 1 → `encounter_seed + 1`
+- Same campaign seed + realm + stage index → same wave behavior, same shrine HP evolution.
 
 ## 4. Seed pipeline (RealmSeed)
 

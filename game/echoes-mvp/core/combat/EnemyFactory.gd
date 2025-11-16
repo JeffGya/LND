@@ -38,19 +38,25 @@ const REALM_ENEMY_FAMILY := {
 ##
 ## @param realm RealmModel - the active realm (virtue, tier, id)
 ## @param stage StageModel  - the current stage (objective_type, encounter_seed)
+## @param wave_index int - optional wave index for multi-wave objectives (default -1)
 ## @return Array[Dictionary] - enemies in stable order (id asc), suitable for
 ##         the existing combat harness (same shape as spawn_dummy_pack).
-static func spawn_realm_pack(realm, stage) -> Array[Dictionary]:
+static func spawn_realm_pack(realm, stage, wave_index: int = -1) -> Array[Dictionary]:
 	if realm == null or stage == null:
 		return []
 
-	var pack_size: int = _get_pack_size_for_stage(stage)
+	var pack_size: int = _get_pack_size_for_stage(realm, stage, wave_index)
 
 	# Deterministic RNG for future small variations (elite markers, etc.).
 	# For MVP we do not yet vary stats per enemy, but keeping the RNG seeded
 	# means we can safely add that later without breaking determinism.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-	rng.seed = stage.encounter_seed
+	var seed: int = int(stage.encounter_seed)
+	if wave_index >= 0:
+		# For multi-wave objectives (e.g. Purify Shrine), offset the seed
+		# per wave so future small variations remain deterministic per wave.
+		seed += wave_index
+	rng.seed = seed
 
 	var family: String = _get_family_for_realm(realm)
 
@@ -90,14 +96,22 @@ static func spawn_realm_pack(realm, stage) -> Array[Dictionary]:
 
 
 ## Decide pack size based on objective type (MVP-lean).
-static func _get_pack_size_for_stage(stage) -> int:
-	match stage.objective_type:
+## For shrine stages we delegate to GameBalance_Realm so pack sizes are
+## tier- and wave-aware without hard-coding values here.
+static func _get_pack_size_for_stage(realm, stage, wave_index: int) -> int:
+	var obj_type := String(stage.objective_type)
+	match obj_type:
 		"combat_trial":
 			# Core combat test: small group, not a swarm.
 			return 3
 		"purify_shrine":
-			# Slightly smaller group to reflect mixed focus (combat + ritual).
-			return 2
+			# Shrine: use balance config for pack sizing. MVP ignores tier
+			# inside get_purify_pack_size, but the signature is future-proof.
+			var tier: int = 1
+			if realm != null and "tier" in realm:
+				tier = int(realm.tier)
+			var w_index: int = max(wave_index, 0)
+			return RealmBal.get_purify_pack_size(tier, w_index)
 		_:
 			return 2
 

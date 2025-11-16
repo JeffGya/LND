@@ -1,5 +1,3 @@
-
-
 extends Resource
 class_name RealmGenerator
 ## RealmGenerator
@@ -139,4 +137,26 @@ static func _build_stage_modifiers(virtue: String, tier: int, objective_type: St
 	#      modifiers["env_tags"] = ["dust", "echoing_steps"]
 	#  elif virtue == "wisdom":
 	#      modifiers["env_tags"] = ["mist", "whispers"]
+
+	# Purify Shrine objective-specific modifiers.
+	# When this stage is a shrine (objective_type == "purify_shrine"),
+	# we attach shrine tuning knobs here so ObjectiveRunner, morale
+	# systems, and reward calculators can read them from StageModel.
+	if objective_type == "purify_shrine":
+		var waves: int = GameBalance_Realm.get_purify_waves()
+		var drain: int = GameBalance_Realm.get_purify_morale_drain(tier)
+		var mult: float = GameBalance_Realm.get_purify_reward_mult(tier)
+
+		# Shrine HP and per-wave passive drain, approximating the shrine timer
+		# at the stage level. Per-round drain and an explicit shrine entity
+		# will be added in the Combat Simulation Core epic.
+		var shrine_hp: int = GameBalance_Realm.get_purify_shrine_hp(tier)
+		var shrine_drain: int = GameBalance_Realm.get_purify_shrine_passive_drain_per_wave(tier)
+
+		modifiers["shrine_waves"] = waves
+		modifiers["morale_drain_per_wave"] = drain
+		modifiers["shrine_reward_multiplier"] = mult
+		modifiers["shrine_hp_max"] = shrine_hp
+		modifiers["shrine_passive_drain_per_wave"] = shrine_drain
+
 	return modifiers

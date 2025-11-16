@@ -62,6 +62,22 @@ static func stage_rewards(realm: RealmModel, stage: StageModel) -> Dictionary:
         _:
             pass
 
+    # Shrine-specific reward multiplier: shrine stages are slightly more
+    # rewarding than standard combat at the same tier, using config-driven
+    # knobs rather than hard-coded constants.
+    if stage.objective_type == "purify_shrine":
+        var shrine_mult: float = 1.0
+        # Prefer a stage-level override when present so RealmGenerator can
+        # bake the chosen multiplier into modifiers for debugging/inspection.
+        if stage.modifiers.has("shrine_reward_multiplier"):
+            shrine_mult = float(stage.modifiers.get("shrine_reward_multiplier", 1.0))
+        else:
+            # Fallback to tier-based config helper in GameBalance_Realm.
+            shrine_mult = GameBalance_Realm.get_purify_reward_mult(realm.tier)
+        if shrine_mult != 1.0:
+            ase = int(round(ase * shrine_mult))
+            ekwan = int(round(ekwan * shrine_mult))
+
     # Optional stage-level modifier hook (e.g., "reward_bonus": 0.1).
     if stage.modifiers.has("reward_bonus"):
         var bonus: float = float(stage.modifiers.get("reward_bonus", 0.0))

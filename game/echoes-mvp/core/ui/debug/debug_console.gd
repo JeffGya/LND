@@ -319,6 +319,28 @@ func _register_default_commands() -> void:
 				if stage == null:
 					_print_line("[realm enter] stage %d is null." % stage_index)
 					return 1
+
+				# Pre-fight: announce which stage and type we are entering so the Keeper
+				# sees context before combat logs start streaming.
+				var stage_type := String(stage.objective_type)
+				_print_line("[realm enter] entering stage=%d type=%s tier=%d" % [
+					stage_index,
+					stage_type,
+					int(active2.tier)
+				])
+				# If this is a Purify Shrine stage, also surface key shrine parameters
+				# from the stage modifiers so the 2-wave survival "timer" is clear.
+				if stage_type == "purify_shrine":
+					var mods: Dictionary = stage.modifiers
+					var waves := int(mods.get("shrine_waves", 2))
+					var hp_max := int(mods.get("shrine_hp_max", 0))
+					var drain := int(mods.get("shrine_passive_drain_per_wave", 0))
+					_print_line("[realm enter] Purify Shrine — waves=%d, shrine_hp=%d, drain_per_wave=%d" % [
+						waves,
+						hp_max,
+						drain
+					])
+
 				# Build party ids: prefer staged party, else auto-pick up to 3 available allies.
 				var party_ids: Array[int] = []
 				for pid in _staged_party:
@@ -342,10 +364,19 @@ func _register_default_commands() -> void:
 				var party_final: Array[int] = res_party.get("party", party_ids)
 
 				# Local combat harness wrapper (hero_party = party ids for CombatEngine).
-				var combat_runner := func(hero_party: Array, enemies: Array, seed: int) -> Dictionary:
-					var rounds := 5
-					if typeof(GameBalance_Debug) == TYPE_OBJECT:
-						rounds = int(GameBalance_Debug.DEBUG_FIGHT_ROUNDS)
+				# Signature matches ObjectiveRunner's expected combat_runner:
+				#   func(hero_party: Array, enemies: Array, seed: int, max_rounds: int) -> Dictionary
+				# For Realm stages, ObjectiveRunner passes max_rounds = -1 to indicate
+				# "no artificial round cap"; we map that to a very high upper bound so
+				# battles effectively run until a true victory/defeat condition.
+				var combat_runner := func(hero_party: Array, enemies: Array, seed: int, max_rounds: int) -> Dictionary:
+					var rounds: int = max_rounds
+					if rounds <= 0:
+						# MVP: treat non-positive max_rounds as "no cap" for Realm stages.
+						# We use a large safety upper bound so we never prematurely stop a
+						# battle due to the demo round limit, while still avoiding true
+						# infinite loops if something goes wrong.
+						rounds = 999
 					var eng := CombatEngine.new()
 					_current_eng = eng
 					var party_ids_local: Array[int] = []
@@ -373,6 +404,27 @@ func _register_default_commands() -> void:
 					return combat_res
 
 				var stage_result: Dictionary = ObjectiveRunnerScript.run_stage(active2, stage, party_final, combat_runner)
+
+				# Post-fight: if this was a Purify Shrine stage, emit a compact summary
+				# of shrine outcome so scanning logs later is easier.
+				var stage_type_after := String(stage.objective_type)
+				if stage_type_after == "purify_shrine":
+					var combat_summary: Variant = stage_result.get("combat", {})
+					if typeof(combat_summary) == TYPE_DICTIONARY:
+						var combat_dict := combat_summary as Dictionary
+						var shrine_hp_end := int(combat_dict.get("shrine_hp_end", 0))
+						var shrine_hp_max := int(combat_dict.get("shrine_hp_max", 0))
+						var waves_v: Variant = combat_dict.get("waves", [])
+						var waves_cleared := 0
+						if typeof(waves_v) == TYPE_ARRAY:
+							waves_cleared = (waves_v as Array).size()
+						_print_line("[shrine] Summary — success=%s, waves_cleared=%d, shrine_hp=%d/%d" % [
+							str(stage_result.get("success", false)),
+							waves_cleared,
+							shrine_hp_end,
+							shrine_hp_max
+						])
+
 				var ok_stage := bool(stage_result.get("success", false))
 				_print_line("[realm enter] stage=%d type=%s success=%s" % [
 					stage_index,
@@ -1192,10 +1244,21 @@ func _register_default_commands() -> void:
 					_print_line("[run_tests] realms: run_all() not found on rewards script")
 					return 1
 
+				var shrine_script = load("res://core/tests/realm/test_purify_shrine.gd")
+				if shrine_script == null:
+					_print_line("[run_tests] realms: shrine script not found at core/tests/realm/test_purify_shrine.gd")
+					return 1
+				var T_shrine = shrine_script.new()
+				if not T_shrine.has_method("run_all"):
+					_print_line("[run_tests] realms: run_all() not found on shrine test instance")
+					return 1
+
 				_print_line("[run_tests] realms: starting realm generation tests…")
 				T_gen.run_all()
 				_print_line("[run_tests] realms: starting realm reward tests…")
 				T_rewards.run_all()
+				_print_line("[run_tests] realms: starting Purify Shrine objective tests…")
+				T_shrine.run_all()
 				_print_line("[run_tests] realms: completed (see PASS/FAIL lines above).")
 				# NOTE: realm tests report PASS/FAIL via push_error; we return 0 here.
 				return 0
@@ -1218,6 +1281,12 @@ func _register_default_commands() -> void:
 				if T3 != null and T3.has_method("run_all"):
 					_print_line("[run_tests] realms: starting realm reward tests…")
 					T3.run_all()
+				var shrine_script_all = load("res://core/tests/realm/test_purify_shrine.gd")
+				if shrine_script_all != null:
+					var T4 = shrine_script_all.new()
+					if T4.has_method("run_all"):
+						_print_line("[run_tests] realms: starting Purify Shrine objective tests…")
+						T4.run_all()
 				_print_line("[run_tests] realms: completed (see PASS/FAIL lines above).")
 				return 0 if failed2 == 0 else 2
 
