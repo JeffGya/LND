@@ -4,6 +4,10 @@
 # Given a hero and the current battle ctx, returns a single action envelope
 # understood by the resolver. Pure module: no IO, no singletons, no RNG.
 # -----------------------------------------------------------------------------
+# Action priority (MVP):
+# In Purify Shrine objectives, the engine may pass a `designated_purifier_id`
+# in ctx; during MVP only that hero will perform PURIFY_SHRINE automatically.
+# -----------------------------------------------------------------------------
 class_name EchoActionChooser
 
 const LOW_HP_THRESHOLD := 0.5               # 50% HP → GUARD triage candidate
@@ -31,7 +35,12 @@ static func choose_action(hero: Dictionary, ctx: Dictionary) -> Dictionary:
 	if fear >= FEAR_REFUSE_THRESHOLD:
 		return _refuse(actor_id, "overwhelmed")
 
-	# --- 2) EMERGENCY GUARD (ALLY TRIAGE) -------------------------------------
+	# --- 2) PURIFY SHRINE (objective-specific command) ------------------------
+	var purify := _maybe_purify_shrine(hero, ctx)
+	if purify.size() > 0:
+		return purify
+
+	# --- 3) EMERGENCY GUARD (ALLY TRIAGE) -------------------------------------
 	var allies: Array[Dictionary] = ctx.get("allies", [])
 	var triage_target: Dictionary = _pick_lowest_hp_ratio_ally(allies)
 	if triage_target.size() > 0:
@@ -45,7 +54,7 @@ static func choose_action(hero: Dictionary, ctx: Dictionary) -> Dictionary:
 				"notes": "triage",
 			}
 
-	# --- 3) ATTACK IF IN RANGE -------------------------------------------------
+	# --- 4) ATTACK IF IN RANGE -------------------------------------------------
 	var enemies: Array[Dictionary] = ctx.get("enemies", [])
 	var weakest: Dictionary = _pick_weakest_enemy(enemies)
 	if weakest.size() > 0:
@@ -58,7 +67,7 @@ static func choose_action(hero: Dictionary, ctx: Dictionary) -> Dictionary:
 				"notes": "focus_weakest",
 			}
 
-		# --- 4) MOVE (fallback) -------------------------------------------------
+		# --- 5) MOVE (fallback) -------------------------------------------------
 		var nearest: Dictionary = _pick_nearest_enemy(actor_id, enemies, ctx)
 		if nearest.size() > 0:
 			return {
@@ -70,6 +79,59 @@ static func choose_action(hero: Dictionary, ctx: Dictionary) -> Dictionary:
 
 	# If there are no enemies, refuse (nothing useful to do in MVP)
 	return _refuse(actor_id, "no_targets")
+# Purify Shrine logic: returns a PURIFY_SHRINE action envelope if eligible, else {}.
+static func _maybe_purify_shrine(hero: Dictionary, ctx: Dictionary) -> Dictionary:
+	var actor_id: int = int(hero.get("id", -1))
+	if actor_id < 0:
+		return {}
+	var objective_type := String(ctx.get("objective_type", ""))
+	if objective_type != "purify_shrine":
+		return {}
+	var designated: int = int(ctx.get("designated_purifier_id", -1))
+	if designated > 0 and actor_id != designated:
+		return {}
+	var allies = ctx.get("allies", [])
+	var shrine_id := int(ctx.get("shrine_id", -1))
+	var shrine: Dictionary = {}
+	for a in allies:
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		if bool(a.get("is_shrine", false)) or int(a.get("id", -2)) == shrine_id:
+			shrine = a
+			break
+	if shrine.size() == 0:
+		return {}
+	# Read HP/max_hp, tolerant of both nested and flat
+	var shrine_hp: int = 0
+	var shrine_max_hp: int = 0
+	if shrine.has("stats") and typeof(shrine["stats"]) == TYPE_DICTIONARY:
+		var stats = shrine["stats"]
+		shrine_hp = int(stats.get("hp", shrine.get("hp", 0)))
+		shrine_max_hp = int(stats.get("max_hp", shrine.get("max_hp", 0)))
+	else:
+		shrine_hp = int(shrine.get("hp", 0))
+		shrine_max_hp = int(shrine.get("max_hp", 0))
+	if shrine_max_hp == 0:
+		shrine_max_hp = 1
+	if shrine_hp <= 0 or shrine_max_hp <= 0:
+		return {}
+	var hp_ratio := float(shrine_hp) / float(shrine_max_hp)
+	if hp_ratio >= 0.5:
+		return {}
+	# Cooldown logic — party-wide Purify cooldown in rounds.
+	# Cooldown logic — party-wide Purify cooldown in rounds.
+	# The engine tracks a shared `shrine_purify_cd_remaining` counter in the
+	# battle state; when this is > 0, no ally should choose Purify.
+	var cd_remaining: int = int(ctx.get("shrine_purify_cd_remaining", 0))
+	if cd_remaining > 0:
+		return {}
+	# All checks passed: return action envelope
+	return {
+		"type": CombatConstants.ActionType.PURIFY_SHRINE,
+		"actor_id": actor_id,
+		"target_id": int(shrine.get("id", shrine_id)),
+		"notes": "auto_purify",
+	}
 
 
 # Internal helpers ------------------------------------------------------------

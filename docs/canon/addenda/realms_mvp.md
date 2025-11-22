@@ -144,6 +144,11 @@ The `purify_shrine` objective is a **two-wave survival trial** with fully determ
   - `shrine_passive_drain_per_wave` — guaranteed shrine HP loss after each wave.
   - If shrine HP reaches **0 at any time**, the stage **fails immediately**, even if that combat wave was won.
 
+- **Shrine drain & Purify (MVP behavior)**
+  - Realm config (`GameBalance_Realm`) defines a **base**
+    - Combat and ObjectiveRunner may **temporarily reduce** the effective drain for a given wave when a Purify action succeeds. The reduction factor is tier-scaled via Realm helpers (e.g. 
+  - Purify never restores shrine HP directly; it only affects how much HP is lost between waves. Once a wave is finished and its drain is applied (with any reductions), that effect is permanent.
+
 - **Combat flow**
   1. **Wave 1**  
      - Uses `stage.encounter_seed`.
@@ -177,6 +182,7 @@ The `purify_shrine` objective is a **two-wave survival trial** with fully determ
 | `"shrine_waves"`                  | int    | Always 2 in MVP |
 | `"shrine_hp_max"`                 | int    | Maximum shrine HP |
 | `"shrine_passive_drain_per_wave"` | int    | Passive HP loss per wave |
+| `"purify_drain_reduction_mult"`   | float  | Multiplier applied to base shrine drain when a wave has been purified (tier-scaled) |
 | `"morale_drain_per_wave"`         | int    | Configured, integration pending |
 | `"shrine_reward_multiplier"`      | float  | Multiplier applied to rewards |
 

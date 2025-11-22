@@ -17,7 +17,7 @@ class_name CombatConstants
 enum Team { ALLY, ENEMY }
 
 # Atomic action types used by the chooser and resolver.
-enum ActionType { ATTACK, GUARD, MOVE, INTERACT, REFUSE }
+enum ActionType { ATTACK, GUARD, MOVE, INTERACT, REFUSE, PURIFY_SHRINE }
 
 # Round orchestration states (Engine steps through these deterministically).
 enum RoundState { INITIATIVE, SELECT, RESOLVE, TICK, CHECK }

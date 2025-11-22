@@ -87,6 +87,8 @@ static func apply_major(action: Dictionary, ctx: Dictionary) -> Dictionary:
 			return _resolve_attack(action, ctx)
 		CombatConstants.ActionType.REFUSE:
 			return _resolve_refuse(action)
+		CombatConstants.ActionType.PURIFY_SHRINE:
+			return _resolve_purify_shrine(action, ctx)
 		_:
 			return _unsupported(action, "major")
 
@@ -107,9 +109,18 @@ static func apply_minor(action: Dictionary, ctx: Dictionary) -> Dictionary:
 static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 	var actor_id: int = int(action.get("actor_id", -1))
 	var target_id: int = int(action.get("target_id", -1))
-	var actor: Dictionary = _find_entity(ctx, actor_id) as Dictionary
-	var target: Dictionary = _find_entity(ctx, target_id) as Dictionary
-	if actor == null or target == null:
+	var actor = _find_entity(ctx, actor_id)
+	var target = _find_entity(ctx, target_id)
+
+	# Targeted assertion for Purify Shrine: if enemies try to hit the shrine,
+	# the shrine entity must be present and well-formed in the context.
+	var objective_type := String(ctx.get("objective_type", ""))
+	var shrine_id := int(ctx.get("shrine_id", -1))
+	if objective_type == "purify_shrine" and target_id == shrine_id:
+		if target == null or typeof(target) != TYPE_DICTIONARY:
+			push_error("[ActionResolver] Purify Shrine combat started without a valid shrine entity (target_id=%s)." % str(target_id))
+
+	if actor == null or typeof(actor) != TYPE_DICTIONARY or target == null or typeof(target) != TYPE_DICTIONARY:
 		return {
 			"ok": false,
 			"type": CombatConstants.ActionType.ATTACK,
@@ -225,6 +236,20 @@ static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 			# With multiplier at 1.0 and same rounding policy, the intuitive delta is simply base_dmg - dmg.
 			guard_reduced_by = max(0, base_dmg - dmg)
 
+	# Apply shrine-specific vulnerability for enemy attacks. This only affects
+	# cases where an enemy is hitting the shrine; allies and all non-shrine
+	# targets use the normal damage rules.
+	if (not actor_is_ally) and typeof(target) == TYPE_DICTIONARY and bool((target as Dictionary).get("is_shrine", false)) and dmg > 0:
+		var shrine_mult: float = HeroBal.SHRINE_ENEMY_DAMAGE_MULTIPLIER
+		if shrine_mult != 1.0:
+			var dmg_f: float = float(dmg) * shrine_mult
+			# Keep the same readability rule as morale: buffs ceil, debuffs floor.
+			if shrine_mult >= 1.0:
+				dmg = int(ceil(dmg_f))
+			else:
+				dmg = int(floor(dmg_f))
+			dmg = max(0, dmg)
+
 	# Apply damage and clamp
 	var new_hp: int = max(0, hp - dmg)
 	# Persist back into ctx entity (Dictionaries are references in Godot)
@@ -268,6 +293,7 @@ static func _resolve_attack(action: Dictionary, ctx: Dictionary) -> Dictionary:
 		"bucket_spill": bucket_spill,
 	}
 
+
 static func _resolve_refuse(action: Dictionary) -> Dictionary:
 	var actor_id: int = int(action.get("actor_id", -1))
 	var reason: String = str(action.get("notes", "refuse"))
@@ -276,6 +302,76 @@ static func _resolve_refuse(action: Dictionary) -> Dictionary:
 		"type": CombatConstants.ActionType.REFUSE,
 		"actor_id": actor_id,
 		"notes": reason,
+	}
+
+static func _resolve_purify_shrine(action: Dictionary, ctx: Dictionary) -> Dictionary:
+	var actor_id: int = int(action.get("actor_id", -1))
+	var target_id: int = int(action.get("target_id", -1))
+
+	# MVP: Purify is a tagged major action with no direct damage.
+	# CombatEngine / ObjectiveRunner interpret this in the context of a
+	# Purify Shrine stage (e.g. to reduce passive shrine drain for the wave).
+	# We still track a target_id so logs/tests can verify that heroes are
+	# purifying the actual shrine entity rather than a random target.
+	var objective_type := String(ctx.get("objective_type", ""))
+	var shrine_id := int(ctx.get("shrine_id", -1))
+	var note: String = String(action.get("notes", "purify_shrine"))
+
+	# New: track wave_purified and cooldown for this hero
+	var round_index: int = 0
+	if typeof(ctx) == TYPE_DICTIONARY:
+		round_index = int(ctx.get("round_index", 0))
+	var wave_purified: bool = false
+	var applied_cd: int = 0
+
+	if objective_type == "purify_shrine" and shrine_id != -1 and target_id == shrine_id and typeof(ctx) == TYPE_DICTIONARY:
+		wave_purified = true
+		ctx["wave_purified"] = true
+		applied_cd = HeroBal.SHRINE_PURIFY_COOLDOWN_ROUNDS
+		var next_round: int = round_index + applied_cd
+		# Party-wide Purify cooldown: a single next_round shared by all allies.
+		ctx["purify_next_round"] = next_round
+		# Optionally mirror onto allied combatants (non-shrine) for AI/debugging.
+		var allies: Array = ctx.get("allies", [])
+		for a in allies:
+			if typeof(a) != TYPE_DICTIONARY:
+				continue
+			var a_dict: Dictionary = a
+			if bool(a_dict.get("is_shrine", false)):
+				continue
+			a_dict["purify_next_round"] = next_round
+
+		# --- Stack-based Purify reduction: add a temporary buff/stack to ctx ---
+		var buffs: Array = ctx.get("shrine_purify_buffs", [])
+		var duration_rounds: int = max(1, HeroBal.SHRINE_PURIFY_STACK_DURATION_ROUNDS)
+		var start_round: int = round_index
+		var expire_round: int = start_round + duration_rounds
+		var buff := {
+			"actor_id": actor_id,
+			"round_start": start_round,
+			"round_expires": expire_round,
+			"multiplier": HeroBal.SHRINE_PURIFY_BASE_DRAIN_REDUCTION,
+		}
+		buffs.append(buff)
+		ctx["shrine_purify_buffs"] = buffs
+
+	if objective_type == "purify_shrine" and shrine_id != -1:
+		if target_id == -1:
+			# If no explicit target is provided, default to the configured shrine id.
+			target_id = shrine_id
+		elif target_id != shrine_id:
+			# Soft debug note for mis-targeted Purify actions; effect is still
+			# interpreted shrine-wide, but logs can surface the mismatch.
+			note = "purify_non_shrine_target"
+
+	return {
+		"ok": true,
+		"type": CombatConstants.ActionType.PURIFY_SHRINE,
+		"actor_id": actor_id,
+		"target_id": target_id,
+		"notes": note,
+		"wave_purified": wave_purified,
+		"applied_cd": applied_cd,
 	}
 
 # -- Minor Resolvers ----------------------------------------------------------
@@ -348,16 +444,24 @@ static func _tier_label(tier: int) -> String:
 
 ## Finds a combatant (ally or enemy) by id within the context. Returns null if missing.
 static func _find_entity(ctx: Dictionary, id_val: int) -> Variant:
+	# Note: shrine may use a reserved negative id (e.g. -1) but still be a
+	# valid combat entity in `ctx.allies`. We only treat negative ids as
+	# invalid when they are not the configured shrine id.
 	if id_val < 0:
-		return null
+		var shrine_id := int(ctx.get("shrine_id", -9999))
+		if id_val != shrine_id:
+			return null
+
 	var allies: Array = ctx.get("allies", [])
 	for a in allies:
 		if typeof(a) == TYPE_DICTIONARY and int((a as Dictionary).get("id", -1)) == id_val:
 			return a
+
 	var enemies: Array = ctx.get("enemies", [])
 	for e in enemies:
 		if typeof(e) == TYPE_DICTIONARY and int((e as Dictionary).get("id", -1)) == id_val:
 			return e
+
 	return null
 
 ## Reads an integer stat from nested paths with a default; tolerant of flat fallbacks.

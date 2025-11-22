@@ -21,6 +21,7 @@
 
 class_name CombatEngine
 
+
 const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
 
 # --- Engine state -------------------------------------------------------------
@@ -46,10 +47,15 @@ func start_battle(battle_seed: int, allies: Array, enemies: Array[Dictionary], o
 		# Fractional damage carryover buckets (per-attacker); populated/used by ActionResolver when enabled.
 		"damage_bucket": {},
 		"emotion_baseline": {},
+		"shrine_purified_this_round": false,
+		"shrine_purify_cd_remaining": 0,
+		"shrine_purify_stacks": [],
+		"designated_purifier_id": -1,
 	}
 	# Apply any persisted morale overrides into the freshly built state
 	_apply_morale_overrides()
 	_capture_emotion_baseline()
+	_assign_designated_purifier()
 
 ## Steps one round through INITIATIVE → SELECT → RESOLVE → TICK → CHECK.
 ## Returns a snapshot for logging/inspection.
@@ -61,6 +67,17 @@ func step_round() -> Dictionary:
 	var round_index: int = int(_state.round)
 
 	# 1) INITIATIVE -------------------------------------------------------------
+	# Shrine-aware context: expose objective type and shrine id (if any) so
+	# ActionResolver can treat negative shrine ids as valid targets and apply
+	# shrine-specific rules.
+	var objective_type: String = String(_state.get("objective", ""))
+	var shrine_id: int = -9999
+	if objective_type == "purify_shrine":
+		for a in _state.get("allies", []):
+			if typeof(a) == TYPE_DICTIONARY and bool((a as Dictionary).get("is_shrine", false)):
+				shrine_id = int((a as Dictionary).get("id", -1))
+				break
+
 	var ctx: Dictionary = {
 		"seed": battle_seed,
 		"round_index": round_index,
@@ -68,6 +85,10 @@ func step_round() -> Dictionary:
 		"enemies": _state.enemies,
 		"attack_range": int(_state.attack_range),
 		"damage_bucket": _state.damage_bucket,
+		"objective_type": objective_type,
+		"shrine_id": shrine_id,
+		"shrine_purify_cd_remaining": int(_state.get("shrine_purify_cd_remaining", 0)),
+		"designated_purifier_id": int(_state.get("designated_purifier_id", -1)),
 	}
 	var order: Array[int] = Initiative.compute_order(ctx)
 
@@ -79,18 +100,24 @@ func step_round() -> Dictionary:
 	var focus_hits: Dictionary = {}  # target_id -> number of times hit this round
 	for actor_id in order:
 		var ent: Variant = _find_entity(actor_id)
-		if ent == null:
+		if ent == null or typeof(ent) != TYPE_DICTIONARY:
 			continue
-		if not _entity_alive(ent):
+		var ent_dict: Dictionary = ent
+		# Shrine and other non-acting entities never take turns.
+		if _is_shrine_entity(ent_dict):
+			continue
+		if ent_dict.has("can_act") and not bool(ent_dict.get("can_act", true)):
+			continue
+		if not _entity_alive(ent_dict):
 			continue
 
 		# Fear-first refusal check (MVP)
 		# We do this BEFORE normal action selection so that fear can override
 		# even when morale is still STEADY. ActionResolver pulls values from
 		# GameBalance_HeroCombat.gd so we don't hardcode thresholds here.
-		var fear_check: Dictionary = ActionResolver.should_refuse_turn(ent as Dictionary)
+		var fear_check: Dictionary = ActionResolver.should_refuse_turn(ent_dict)
 		if bool(fear_check.get("refuse", false)):
-			var fear_effect: Dictionary = _apply_fear_outcome(fear_check, ent as Dictionary, ctx)
+			var fear_effect: Dictionary = _apply_fear_outcome(fear_check, ent_dict, ctx)
 			# Decorate effect with names just like normal actions so logs stay consistent
 			var actor_name_fc: String = str(name_by_id.get(actor_id, str(actor_id)))
 			fear_effect["actor_name"] = actor_name_fc
@@ -106,15 +133,15 @@ func step_round() -> Dictionary:
 		var side := _side_of(actor_id)
 		var action: Dictionary
 		if side == "ALLY":
-			action = EchoActionChooser.choose_action(ent, ctx)
+			action = EchoActionChooser.choose_action(ent_dict, ctx)
 		else:
-			action = _choose_enemy_action(ent, ctx)
+			action = _choose_enemy_action(ent_dict, ctx)
 
 		# Apply via resolver according to action type
 		var t := int(action.get("type", -1))
 		var effect: Dictionary
 		match t:
-			CombatConstants.ActionType.ATTACK, CombatConstants.ActionType.REFUSE:
+			CombatConstants.ActionType.ATTACK, CombatConstants.ActionType.REFUSE, CombatConstants.ActionType.PURIFY_SHRINE:
 				effect = ActionResolver.apply_major(action, ctx)
 			CombatConstants.ActionType.GUARD, CombatConstants.ActionType.MOVE:
 				effect = ActionResolver.apply_minor(action, ctx)
@@ -154,7 +181,7 @@ func step_round() -> Dictionary:
 			if side == "ALLY":
 				if (not has_mult) or (not has_tier):
 					# Derive from the current attacker entity
-					var m_val: int = _get_morale(ent as Dictionary)
+					var m_val: int = _get_morale(ent_dict)
 					# Use enum tier to avoid string drift, then map to label and multiplier
 					var tier_enum: int = CombatConstants.morale_tier(m_val)
 					var tier_label: String = _morale_tier_label(m_val)
@@ -180,6 +207,51 @@ func step_round() -> Dictionary:
 					effect["morale_tier"] = "BROKEN"
 				if not effect.has("morale_mult"):
 					effect["morale_mult"] = 1.0
+
+		# Mark shrine purification and add a time-limited stack when a PURIFY_SHRINE action succeeds.
+		if eff_type == CombatConstants.ActionType.PURIFY_SHRINE and effect.get("ok", true):
+			# Per-round flag: useful for logs / QA tick summaries.
+			_state["shrine_purified_this_round"] = true
+
+			# Party‑wide cooldown: after a successful Purify, the whole party shares a cooldown.
+			var cd_base: int = int(HeroBal.SHRINE_PURIFY_COOLDOWN_ROUNDS)
+			if cd_base < 0:
+				cd_base = 0
+			var current_cd: int = int(_state.get("shrine_purify_cd_remaining", 0))
+			_state["shrine_purify_cd_remaining"] = max(current_cd, cd_base)
+
+			# Time‑limited drain reduction stack:
+			# The resolver may specify stack duration / magnitude; otherwise fall back to balance defaults.
+			var default_stack_rounds: int = int(HeroBal.SHRINE_PURIFY_STACK_DURATION_ROUNDS)
+			if default_stack_rounds < 0:
+				default_stack_rounds = 0
+
+			# Default reduction is derived from the base drain and the config multiplier:
+			# base_drain - reduction = base_drain * MULTIPLIER  ⇒  reduction = base_drain * (1 - MULTIPLIER)
+			var base_drain: int = int(HeroBal.SHRINE_DRAIN_PER_ROUND_BASE)
+			var default_reduction: int = 0
+			if base_drain > 0:
+				var frac: float = 1.0 - float(HeroBal.SHRINE_PURIFY_BASE_DRAIN_REDUCTION)
+				if frac < 0.0:
+					frac = 0.0
+				if frac > 1.0:
+					frac = 1.0
+				default_reduction = int(round(float(base_drain) * frac))
+				if default_reduction < 1 and frac > 0.0:
+					default_reduction = 1
+
+			var stack_rounds: int = int(effect.get("shrine_stack_rounds", default_stack_rounds))
+			var stack_reduction: int = int(effect.get("shrine_reduction", default_reduction))
+
+			if stack_rounds > 0 and stack_reduction > 0:
+				var stacks: Array = []
+				if _state.has("shrine_purify_stacks") and typeof(_state["shrine_purify_stacks"]) == TYPE_ARRAY:
+					stacks = _state["shrine_purify_stacks"]
+				stacks.append({
+					"rounds_left": stack_rounds,
+					"reduction": stack_reduction,
+				})
+				_state["shrine_purify_stacks"] = stacks
 
 		# Fear accrual from impactful events (MVP)
 		# If this action actually hit a target, increase that target's fear.
@@ -281,6 +353,71 @@ func get_state() -> Dictionary:
 # --- Internal helpers --------------------------------------------------------
 
 
+# MVP shrine behaviour:
+# - The engine auto-designates a single "purifier" hero for Purify Shrine stages.
+# - Post-MVP we may let the Keeper explicitly choose the purifier at stage start.
+func _assign_designated_purifier() -> void:
+	# MVP: only relevant for Purify Shrine objectives.
+	var objective: String = String(_state.get("objective", ""))
+	if objective != "purify_shrine":
+		_state["designated_purifier_id"] = -1
+		return
+
+	var chosen_id: int = -1
+	var best_score: int = -2147483648  # simple "minus infinity"
+
+	for a in _state.get("allies", []):
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var ent: Dictionary = a
+
+		# Shrines and dead allies can never be the purifier.
+		if _is_shrine_entity(ent):
+			continue
+		if not _entity_alive(ent):
+			continue
+
+		var id_val: int = int(ent.get("id", -1))
+		if id_val < 0:
+			continue
+
+		var score: int = _score_purifier_candidate(ent)
+
+		if chosen_id == -1 or score > best_score or (score == best_score and id_val < chosen_id):
+			chosen_id = id_val
+			best_score = score
+
+	_state["designated_purifier_id"] = chosen_id
+
+# Scores a candidate hero for the purifier role. Focuses on faith and devout archetype.
+func _score_purifier_candidate(ent: Dictionary) -> int:
+	var score: int = 0
+
+	# Prefer heroes whose archetype is explicitly devout.
+	var arch_s: String = String(ent.get("archetype", "none"))
+	if arch_s == "devout":
+		score += HeroBal.PURIFIER_SCORE_DEVOUT_BONUS
+
+	# Pull hero stats if present; we keep this flexible so lore / personality
+	# stats like wisdom/faith can coexist with combat stats.
+	if ent.has("stats") and typeof(ent.stats) == TYPE_DICTIONARY:
+		var stats: Dictionary = ent.stats
+
+		# Faith: primary signal for purifier role.
+		if stats.has("faith"):
+			score += int(stats.get("faith", 0)) * HeroBal.PURIFIER_SCORE_FAITH_WEIGHT
+
+		# Wisdom: secondary tie-breaker (different key spellings allowed).
+		if stats.has("wisdom"):
+			score += int(stats.get("wisdom", 0)) * HeroBal.PURIFIER_SCORE_WISDOM_WEIGHT
+		elif stats.has("wis"):
+			score += int(stats.get("wis", 0)) * HeroBal.PURIFIER_SCORE_WISDOM_WEIGHT
+
+	# Morale as a soft tie-breaker: more composed heroes are preferred.
+	score += _get_morale(ent) * HeroBal.PURIFIER_SCORE_MORALE_WEIGHT
+
+	return score
+
 #
 # Applies the outcome chosen by ActionResolver.should_refuse_turn(...)
 # MVP: only "refuse" and "guard" are supported here. "retreat/abandon" is post-MVP
@@ -344,6 +481,11 @@ func _morale_tier_label(morale_value: int) -> String:
 		CombatConstants.MoraleTier.SHAKEN:  return "SHAKEN"
 		_:                                   return "BROKEN"
 
+func _is_shrine_entity(ent: Dictionary) -> bool:
+	if typeof(ent) != TYPE_DICTIONARY:
+		return false
+	return bool(ent.get("is_shrine", false))
+
 func _normalize_allies(allies: Array) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for a in allies:
@@ -358,6 +500,41 @@ func _normalize_allies(allies: Array) -> Array[Dictionary]:
 				# Ensure minimal shape; keep existing stats if present
 				if not d_in.has("id"):
 					d_in["id"] = 0
+
+				# Shrine special-case: if an ally dict is marked as a shrine, we
+				# preserve its provided shape and skip EmotionService hydration.
+				# Shrines do not act and do not participate in morale/fear systems.
+				if bool(d_in.get("is_shrine", false)):
+					var shrine_out: Dictionary = d_in.duplicate(true)
+
+					shrine_out["can_act"] = false
+					shrine_out["fear"] = 0
+
+					if not shrine_out.has("stats") or typeof(shrine_out["stats"]) != TYPE_DICTIONARY:
+						var s := {
+							EchoConstants.STAT_HP: int(shrine_out.get("hp", 0)),
+							EchoConstants.STAT_MAX_HP: int(shrine_out.get("max_hp", shrine_out.get("hp", 0))),
+							EchoConstants.STAT_ATK: 0,
+							EchoConstants.STAT_DEF: 0,
+							EchoConstants.STAT_AGI: 0,
+							EchoConstants.STAT_MORALE: 0,
+							EchoConstants.STAT_FEAR: 0,
+						}
+						shrine_out["stats"] = s
+					else:
+						var s2: Dictionary = shrine_out["stats"]
+						if not s2.has(EchoConstants.STAT_HP):
+							s2[EchoConstants.STAT_HP] = int(shrine_out.get("hp", 0))
+						if not s2.has(EchoConstants.STAT_MAX_HP):
+							s2[EchoConstants.STAT_MAX_HP] = int(shrine_out.get("max_hp", shrine_out.get("hp", 0)))
+						shrine_out["stats"] = s2
+
+					shrine_out["hp"] = int(shrine_out["stats"][EchoConstants.STAT_HP])
+					shrine_out["max_hp"] = int(shrine_out["stats"][EchoConstants.STAT_MAX_HP])
+
+					out.append(shrine_out)
+					continue
+
 				var d_out: Dictionary = d_in
 				if not d_out.has("stats") or typeof(d_out["stats"]) != TYPE_DICTIONARY:
 					d_out["stats"] = _fallback_stats_from_balance()
@@ -662,10 +839,45 @@ func _apply_ticks() -> Dictionary:
 	var fear_tick: int = CombatConstants.FEAR_PER_ROUND
 	var morale_decay_applied: bool = false
 	var do_decay: bool = (int(_state.round) % CombatConstants.MORALE_DECAY_EVERY_N_ROUNDS) == 0
+	var shrine_drain_applied: int = 0
+	var shrine_purified: bool = bool(_state.get("shrine_purified_this_round", false))
+
+	# Global Purify cooldown (party‑wide): tick down once per round after all actions.
+	var cd_remaining: int = int(_state.get("shrine_purify_cd_remaining", 0))
+	if cd_remaining > 0:
+		cd_remaining -= 1
+		if cd_remaining < 0:
+			cd_remaining = 0
+	_state["shrine_purify_cd_remaining"] = cd_remaining
+
+	# Update Purify stacks: apply their reduction this round and decay their remaining duration.
+	var stacks_in: Array = []
+	if _state.has("shrine_purify_stacks") and typeof(_state["shrine_purify_stacks"]) == TYPE_ARRAY:
+		stacks_in = _state["shrine_purify_stacks"]
+	var stacks_out: Array = []
+	var shrine_purify_reduction: int = 0
+	for s in stacks_in:
+		if typeof(s) != TYPE_DICTIONARY:
+			continue
+		var rounds_left: int = int((s as Dictionary).get("rounds_left", 0))
+		var reduction: int = int((s as Dictionary).get("reduction", 0))
+		if rounds_left <= 0 or reduction <= 0:
+			continue
+		# This stack applies to the current round.
+		shrine_purify_reduction += reduction
+		# Then decay duration for future rounds.
+		rounds_left -= 1
+		if rounds_left > 0:
+			var s_next: Dictionary = (s as Dictionary).duplicate(true)
+			s_next["rounds_left"] = rounds_left
+			stacks_out.append(s_next)
+	_state["shrine_purify_stacks"] = stacks_out
 
 	# Allies: fear + morale decay
 	for ent in _state.get("allies", []):
 		if not _entity_alive(ent):
+			continue
+		if _is_shrine_entity(ent):
 			continue
 		# Fear accrual
 		var fear: int = int(ent.get("fear", 0))
@@ -689,12 +901,92 @@ func _apply_ticks() -> Dictionary:
 		fear_e = min(100, max(0, fear_e + fear_tick))
 		ent_e["fear"] = fear_e
 
-	return {"fear": fear_tick, "morale_decay": morale_decay_applied}
+		# Shrine: per-round passive HP drain (Purify Shrine objective only)
+	# We treat the shrine as a special allied entity with `is_shrine = true`.
+	# Drain amount is driven by GameBalance_HeroCombat.SHRINE_DRAIN_PER_ROUND_BASE
+	# and reduced by any active, time-limited Purify stacks.
+	if String(_state.get("objective", "")) == "purify_shrine" and HeroBal.SHRINE_DRAIN_PER_ROUND_BASE != 0:
+		for ent_shrine in _state.get("allies", []):
+			if typeof(ent_shrine) != TYPE_DICTIONARY:
+				continue
+			var shrine_dict: Dictionary = ent_shrine
+			if not _is_shrine_entity(shrine_dict):
+				continue
+
+			# Read current HP / Max HP using the same helper used elsewhere for logs.
+			var hp_pair: Dictionary = _read_hp_pair(shrine_dict)
+			var hp_before: int = int(hp_pair.get("hp", 0))
+			var max_hp: int = int(hp_pair.get("max_hp", 0))
+			if hp_before <= 0:
+				break
+
+			var drain: int = HeroBal.SHRINE_DRAIN_PER_ROUND_BASE
+
+			# Apply any active Purify stacks as a reduction to this round's drain.
+			if shrine_purify_reduction > 0:
+				drain = max(0, drain - shrine_purify_reduction)
+
+			if drain <= 0:
+				break
+
+			var hp_after: int = max(0, hp_before - drain)
+
+			# Persist back into stats and flat HP so both views stay in sync.
+			if shrine_dict.has("stats") and typeof(shrine_dict["stats"]) == TYPE_DICTIONARY:
+				var s: Dictionary = shrine_dict["stats"]
+				if s.has(EchoConstants.STAT_HP):
+					s[EchoConstants.STAT_HP] = hp_after
+				shrine_dict["stats"] = s
+
+			shrine_dict["hp"] = hp_after
+			shrine_dict["max_hp"] = max_hp
+
+			shrine_drain_applied = hp_before - hp_after
+			break
+	# Purify effect is per-round: clear the flag after applying this tick.
+	_state["shrine_purified_this_round"] = false
+
+	return {
+		"fear": fear_tick,
+		"morale_decay": morale_decay_applied,
+		"shrine_drain": shrine_drain_applied,
+		"shrine_purified": shrine_purified,
+		"shrine_purify_reduction": shrine_purify_reduction,
+		"shrine_purify_cd": int(_state.get("shrine_purify_cd_remaining", 0)),
+	}
 
 func _check_end() -> Dictionary:
-	var allies_alive: bool = false
+	# Shrine-aware end condition handling.
+	var objective: String = String(_state.get("objective", "defeat"))
+	var shrine_present: bool = false
+	var shrine_dead: bool = false
+	var shrine_hp_remaining: int = 0
 	for a in _state.get("allies", []):
-		if _entity_alive(a):
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var ent: Dictionary = a
+		if bool(ent.get("is_shrine", false)):
+			shrine_present = true
+			var hp_pair: Dictionary = _read_hp_pair(ent)
+			var raw_hp: int = int(hp_pair.get("hp", 0))
+			var max_hp: int = int(hp_pair.get("max_hp", 0))
+			var clamped_hp: int = max(0, raw_hp)
+			if max_hp > 0:
+				clamped_hp = min(clamped_hp, max_hp)
+			# Write clamped HP back into the entity so downstream checks see a sane value
+			if ent.has("stats") and typeof(ent.stats) == TYPE_DICTIONARY:
+				(ent.stats as Dictionary)[EchoConstants.STAT_HP] = clamped_hp
+				ent.stats["hp"] = clamped_hp
+			else:
+				ent["hp"] = clamped_hp
+			shrine_hp_remaining = clamped_hp
+			if not _entity_alive(ent):
+				shrine_dead = true
+			break
+
+	var allies_alive: bool = false
+	for a2 in _state.get("allies", []):
+		if _entity_alive(a2):
 			allies_alive = true
 			break
 	var enemies_alive: bool = false
@@ -706,7 +998,13 @@ func _check_end() -> Dictionary:
 	var reason: String = ""
 	var victory: bool = false
 
-	if not enemies_alive and allies_alive:
+	# Shrine-specific failure: in Purify Shrine objectives, shrine destruction
+	# immediately ends the battle as a loss, even if heroes are still standing.
+	if objective == "purify_shrine" and shrine_present and shrine_dead:
+		_state.over = true
+		victory = false
+		reason = "shrine_destroyed"
+	elif not enemies_alive and allies_alive:
 		_state.over = true
 		victory = true
 		reason = "enemies_defeated"
@@ -738,6 +1036,10 @@ func _check_end() -> Dictionary:
 
 	if _state.over:
 		_state.result = {"victory": victory, "reason": reason}
+		# Surface shrine outcome when present so ObjectiveRunner can react.
+		if shrine_present:
+			_state.result["shrine_destroyed"] = shrine_dead
+			_state.result["shrine_hp_remaining"] = shrine_hp_remaining
 		var emo_result: Dictionary = _build_emotion_result()
 		if emo_result.size() > 0:
 			_state.result["emotion"] = emo_result
@@ -763,6 +1065,8 @@ func _capture_emotion_baseline() -> void:
 		if typeof(a) != TYPE_DICTIONARY:
 			continue
 		var ent: Dictionary = a
+		if _is_shrine_entity(ent):
+			continue
 		var hero_id: int = int(ent.get("id", -1))
 		if hero_id <= 0:
 			continue
@@ -784,6 +1088,8 @@ func _build_emotion_result() -> Dictionary:
 		if typeof(a) != TYPE_DICTIONARY:
 			continue
 		var ent: Dictionary = a
+		if _is_shrine_entity(ent):
+			continue
 		var hero_id: int = int(ent.get("id", -1))
 		if hero_id <= 0:
 			continue
@@ -853,9 +1159,12 @@ func _apply_morale_overrides() -> void:
 	for a in _state.get("allies", []):
 		if typeof(a) != TYPE_DICTIONARY:
 			continue
-		var id_a := int((a as Dictionary).get("id", -1))
+		var ent_a: Dictionary = a
+		if _is_shrine_entity(ent_a):
+			continue
+		var id_a := int(ent_a.get("id", -1))
 		if id_a >= 0 and _morale_overrides.has(id_a):
-			_write_morale(a as Dictionary, int(_morale_overrides[id_a]))
+			_write_morale(ent_a, int(_morale_overrides[id_a]))
 	# Enemies (supported for completeness, even if MVP ignores morale for them)
 	for e in _state.get("enemies", []):
 		if typeof(e) != TYPE_DICTIONARY:
@@ -872,6 +1181,20 @@ func _write_morale(ent: Dictionary, morale_value: int) -> void:
 	else:
 		ent["morale"] = v
 
+func _find_alive_shrine(allies: Array) -> Dictionary:
+	var shrine: Dictionary = {}
+	for a in allies:
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var ent: Dictionary = a
+		if not _is_shrine_entity(ent):
+			continue
+		if not _entity_alive(ent):
+			continue
+		shrine = ent
+		break
+	return shrine
+
 # Simple mirrored chooser for enemies (deterministic, no RNG) -----------------
 func _choose_enemy_action(enemy: Dictionary, ctx: Dictionary) -> Dictionary:
 	var actor_id := int(enemy.get("id", -1))
@@ -887,6 +1210,28 @@ func _choose_enemy_action(enemy: Dictionary, ctx: Dictionary) -> Dictionary:
 	var triage: Dictionary = _pick_lowest_hp_ratio(ctx.get("enemies", []))
 	if typeof(triage) == TYPE_DICTIONARY and triage.size() > 0 and int(triage["id"]) != actor_id and float(triage["hp_ratio"]) < 0.5:
 		return {"type": CombatConstants.ActionType.GUARD, "actor_id": actor_id, "target_id": int(triage["id"]), "notes": "triage"}
+
+	# Shrine priority in Purify Shrine objectives (MVP):
+	var objective: String = String(_state.get("objective", "defeat"))
+	if objective == "purify_shrine":
+		var shrine_ent: Dictionary = _find_alive_shrine(ctx.get("allies", []))
+		if shrine_ent.size() > 0:
+			var shrine_id: int = int(shrine_ent.get("id", -1))
+			# Always prioritize attacking shrine when in range.
+			if _is_in_range(actor_id, shrine_id, ctx):
+				return {
+					"type": CombatConstants.ActionType.ATTACK,
+					"actor_id": actor_id,
+					"target_id": shrine_id,
+					"notes": "focus_shrine"
+				}
+			# If somehow out of range (future distance systems), move toward shrine.
+			return {
+				"type": CombatConstants.ActionType.MOVE,
+				"actor_id": actor_id,
+				"target_id": shrine_id,
+				"notes": "approach_shrine"
+			}
 
 	# ATTACK weakest ally if in range; else MOVE toward nearest ally
 	var weakest: Dictionary = _pick_weakest(ctx.get("allies", []))
@@ -991,12 +1336,21 @@ func _build_name_map() -> Dictionary:
 	for a in _state.get("allies", []):
 		if typeof(a) != TYPE_DICTIONARY:
 			continue
-		var id_val: int = int(a.get("id", -1))
+		var ent: Dictionary = a
+		var id_val: int = int(ent.get("id", -1))
+
+		# Shrine entries may use a reserved/negative id; always name them from the entity.
+		if _is_shrine_entity(ent):
+			var shrine_name: String = str(ent.get("name", "Shrine"))
+			map[id_val] = shrine_name
+			continue
+
 		if id_val < 0:
 			continue
+
 		var nm: String = ""
-		if (a as Dictionary).has("name"):
-			nm = str((a as Dictionary).get("name", ""))
+		if ent.has("name"):
+			nm = str(ent.get("name", ""))
 		if nm == "":
 			nm = _hero_name_from_save(id_val)
 		if nm == "":
@@ -1060,11 +1414,12 @@ func _pair_key(a: int, b: int) -> int:
 # Map numeric action types to canonical logger verbs
 static func _action_type_to_verb(t: int) -> String:
 	match t:
-		CombatConstants.ActionType.ATTACK: return "ATTACK"
-		CombatConstants.ActionType.GUARD:  return "GUARD"
-		CombatConstants.ActionType.MOVE:   return "MOVE"
-		CombatConstants.ActionType.REFUSE: return "REFUSE"
-		_:                                 return ""
+		CombatConstants.ActionType.ATTACK:        return "ATTACK"
+		CombatConstants.ActionType.GUARD:         return "GUARD"
+		CombatConstants.ActionType.MOVE:          return "MOVE"
+		CombatConstants.ActionType.REFUSE:        return "REFUSE"
+		CombatConstants.ActionType.PURIFY_SHRINE: return "PURIFY_SHRINE"
+		_:                                        return ""
 
 # Comparator for sorting candidate entities by hp ascending, then id ascending
 static func _cmp_hp_asc_id_asc(a: Dictionary, b: Dictionary) -> bool:
@@ -1086,12 +1441,15 @@ func _increase_fear_on_entity(ent_id: int, amount: int) -> void:
 	var ent: Variant = _find_entity(ent_id)
 	if ent == null or typeof(ent) != TYPE_DICTIONARY:
 		return
-	var fear_cur: int = int((ent as Dictionary).get("fear", 0))
+	var ent_dict: Dictionary = ent as Dictionary
+	if _is_shrine_entity(ent_dict):
+		return
+	var fear_cur: int = int(ent_dict.get("fear", 0))
 	var fear_new: int = min(HeroBal.FEAR_MAX, max(0, fear_cur + amount))
-	(ent as Dictionary)["fear"] = fear_new
+	ent_dict["fear"] = fear_new
 	# Also mirror into stats if present so shape stays consistent
-	if (ent as Dictionary).has("stats") and typeof((ent as Dictionary).stats) == TYPE_DICTIONARY:
-		((ent as Dictionary).stats as Dictionary)[EchoConstants.STAT_FEAR] = fear_new
+	if ent_dict.has("stats") and typeof(ent_dict.stats) == TYPE_DICTIONARY:
+		(ent_dict.stats as Dictionary)[EchoConstants.STAT_FEAR] = fear_new
 
 # Apply KO shock: when an ally goes down during this round, surviving allies
 # gain FEAR_PER_ALLY_KO. This scans the live state and compares hp/status.
@@ -1101,15 +1459,21 @@ func _apply_fear_from_ally_ko() -> void:
 	for a in _state.get("allies", []):
 		if typeof(a) != TYPE_DICTIONARY:
 			continue
-		if not _entity_alive(a as Dictionary):
-			ko_allies.append(int((a as Dictionary).get("id", -1)))
+		var ent_a: Dictionary = a
+		if _is_shrine_entity(ent_a):
+			continue
+		if not _entity_alive(ent_a):
+			ko_allies.append(int(ent_a.get("id", -1)))
 	if ko_allies.is_empty():
 		return
-	# For each alive ally, add KO fear once (per round), regardless of how many fell.
+	# For each alive ally (non-shrine), add KO fear once (per round).
 	for a2 in _state.get("allies", []):
 		if typeof(a2) != TYPE_DICTIONARY:
 			continue
-		if not _entity_alive(a2 as Dictionary):
+		var ent_a2: Dictionary = a2
+		if _is_shrine_entity(ent_a2):
 			continue
-		var id_a2: int = int((a2 as Dictionary).get("id", -1))
+		if not _entity_alive(ent_a2):
+			continue
+		var id_a2: int = int(ent_a2.get("id", -1))
 		_increase_fear_on_entity(id_a2, HeroBal.FEAR_PER_ALLY_KO)

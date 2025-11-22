@@ -268,6 +268,129 @@ Sarah Danquah REFUSE (fear_refusal, fear=80)
 3. Set `LOG_OVERRIDE_SHOW_DMG_BREAKDOWN=false` (designer) → breakdown tag disappears, guard remains.
 4. Force refusal (`/fear_set <id> 80`) → `REFUSE (fear_refusal, fear=80)` single-line entry appears.
 
+## 5.4 Purify Shrine as Combat Scenario (MVP Layout)
+
+**Canon Link:** LND §4 Core Mechanics, §6 Realm Structure, §8 Economy, §9 Combat  
+**User Story:** *As the Keeper I want an actual shrine to protect, purify action and enemies that attack the shrine.*  
+**Epic:** Combat Simulation Core
+
+Purify Shrine is a **realm objective** that becomes a specific kind of combat encounter:
+
+- Realm side (already implemented) seeds shrine HP, passive drain per wave, morale drain, reward multiplier and wave count.  
+- Combat side (this epic) represents the shrine as a special combat entity, gives enemies a shrine-focused targeting bias, and exposes a **Purify** action that can soften shrine drain at the right time.
+
+### 5.4.1 Inputs from Realm Balance
+
+Realm-side numbers live in `core/config/GameBalance_Realm.gd` under the `PURIFY_SHRINE` block. Combat and ObjectiveRunner should treat these helpers as the single source of truth:
+
+- `get_purify_shrine_hp(tier)`  
+  → Max shrine HP for the stage tier (e.g. 100/135/170).  
+- `get_purify_shrine_passive_drain_per_wave(tier)`  
+  → How much shrine HP is lost automatically **between waves** (the coarse “timer”).  
+- `get_purify_morale_drain(tier)`  
+  → Morale loss per wave for participating heroes; drives EmotionService and refusal pressure.  
+- `get_purify_reward_mult(tier)`  
+  → Ase/Ekwan reward multiplier for shrine stages.  
+- `get_purify_shrine_drain_reduction(tier)`  
+  → Effective Purify **drain reduction multiplier** for this tier, combining combat base + tier scalar.  
+- `get_purify_shrine_hp_threshold_fraction(tier)`  
+  → Shrine HP fraction at which Purify becomes available (more forgiving on low tiers, harsher on high tiers).  
+- `get_purify_shrine_max_purify_per_wave(tier)`  
+  → Maximum number of successful Purify uses per wave for this tier.
+
+This keeps **tier scaling** in Realm, while Combat stays tier-agnostic and only asks “what are my knobs for this stage?”.
+
+### 5.4.2 Combat-Side Shrine Knobs
+
+Combat-global shrine tuning lives in `core/config/GameBalance_HeroCombat.gd` under the **PURIFY SHRINE (combat tuning)** section:
+
+- `SHRINE_ENEMY_DAMAGE_MULTIPLIER`  
+  → Enemies deal slightly **more damage** to the shrine than to heroes (e.g. 1.2×), making focused shrine attacks feel threatening.  
+- `SHRINE_PURIFY_BASE_DRAIN_REDUCTION`  
+  → Base fraction of shrine passive drain that remains after a successful Purify on a wave (e.g. 0.5 = 50% of normal drain). Tier scalars from Realm adjust this up/down.  
+- `SHRINE_PURIFY_BASE_HP_THRESHOLD_FRACTION`  
+  → Base shrine HP fraction where Purify becomes available (e.g. 0.5 = below 50% HP); Realm may shift this by tier.  
+- `SHRINE_PURIFY_COOLDOWN_ROUNDS`  
+  → Global per-hero cooldown in rounds after using Purify (same across tiers).  
+- `SHRINE_MAX_PURIFY_PER_WAVE_BASE`  
+  → Base cap on how many Purify uses can succeed per wave across all heroes (e.g. 1). Realm can tighten this per tier.
+
+Together, Realm + Combat form a two-layer dial:
+
+- Combat describes **what Purify is** and how shrine damage behaves in general.  
+- Realm describes **how intense** shrine stages feel at each tier by scaling those knobs.
+
+### 5.4.3 Shrine as a Combat Entity (Design Target for MVP)
+
+In shrine stages, the combat layer treats the shrine as a special allied unit:
+
+- Has `hp_current` and `hp_max` seeded from `get_purify_shrine_hp(tier)`.  
+- Marked with an `is_shrine` flag so AI and logs can recognize it.  
+- Does **not** act (no major/minor actions) — it is an object to defend, not a participant.  
+- Appears in combat state and logs so the Keeper can track its HP over time.
+
+Enemy AI for these stages:
+
+- If the objective is `purify_shrine` and the shrine is alive, ATTACK actions **default to the shrine** as their primary target.  
+- Damage against the shrine uses the normal damage pipeline, then multiplies by `SHRINE_ENEMY_DAMAGE_MULTIPLIER`.  
+- If the shrine is destroyed, enemies fall back to normal hero-targeting behavior.
+
+End condition (MVP target):
+
+- If shrine HP ≤ 0 at any point → immediate failure with reason `"shrine_destroyed"`, even if heroes are still standing.  
+- Success requires clearing all configured waves **and** keeping the shrine alive.
+
+
+### 5.4.4 Purify Action & Wave Drain
+
+Purify is a **support action** that manipulates shrine drain rather than dealing damage:
+
+- Only available if the current objective is `purify_shrine`.  
+- Only offered when shrine HP is below the tier-specific threshold from `get_purify_shrine_hp_threshold_fraction(tier)`.  
+- Has a per-hero cooldown of `SHRINE_PURIFY_COOLDOWN_ROUNDS` rounds.  
+- Once a hero successfully uses Purify on a wave, that wave is marked as `wave_purified = true` and the passive drain applied between waves is reduced using `get_purify_shrine_drain_reduction(tier)`.  
+- At most `get_purify_shrine_max_purify_per_wave(tier)` successful Purify actions may occur per wave across all heroes.
+
+Intended feel:
+
+- Early tiers: Purify unlocks earlier and is relatively strong, giving the Keeper a forgiving safety valve.  
+- Later tiers: Purify unlocks later and is weaker, increasing tension unless the Keeper invests in heroes/sanctum that bolster Purify-related stats.
+
+
+#### 5.4.4.1 MVP Purifier Assignment & Cooldown Logic (Final)
+
+MVP introduces an **auto-designated purifier** system:
+
+- At the *start of a Purify Shrine stage*, CombatEngine automatically selects exactly **one** hero to serve as the **Purifier** for the entire stage.
+- Selection heuristic is defined in `GameBalance_HeroCombat.gd` via scoring weights:
+  - Higher **Faith** → higher score
+  - **Devout** archetype → score bonus  
+  (Weights tunable in config.)
+- Only the designated purifier is allowed to use `PURIFY_SHRINE`.
+- Other heroes will *never* attempt Purify and will behave normally.
+
+**Cooldown & usage rules (final MVP behavior):**
+
+- Purify has a **global per-wave cap** (configurable): only a limited number of successful Purify uses may occur each wave.
+- Individual purifier has a **round-based cooldown** (`SHRINE_PURIFY_COOLDOWN_ROUNDS`).
+- Purify creates a **temporary reduction stack** for this wave only; stacks expire at the end of the wave.
+- Purify never restores shrine HP — it only *reduces that wave’s post-wave drain*.
+
+This matches the implemented behavior and provides predictable support pressure without introducing multi‑hero Purify clutter.
+
+### 5.4.5 Interaction with Morale & Fear
+
+Shrine stages are deliberately tuned to feel **emotionally heavy**:
+
+- `get_purify_morale_drain(tier)` applies morale penalties between waves, pushing heroes toward SHAKEN/BROKEN over time.  
+- Concentrated damage on one object (the shrine) tends to trigger more **fear-related refusal** as KO events and bad rounds stack up.  
+- The Keeper’s choice to spend a Purify (and when) directly affects how long heroes must endure under pressure.
+
+This keeps shrine encounters aligned with the core canon loop:
+
+- **Guidance > Control:** the Keeper chooses the party and whether to Purify; Echoes still respond to fear and morale.  
+- **Legacy > Grind:** shrine failures feed into Faith and story, not just numeric loss.
+
 ## 6. Determinism Guarantees
 
 ✅ Identical seed ⇒ identical battle order, choices, and outcomes.  
@@ -300,6 +423,23 @@ All commands live in `core/ui/debug/debug_console.gd`.
 | **Reactions / Conditions** | On-hit events, morale bursts, and conditional skills. |
 | **Persistence Hooks** | Return-to-Sanctum state updates post-battle. |
 | **UI Layer** | Animated timeline for round snapshots. |
+
+### 8.1. Future: Keeper-chosen purifier (post-MVP)
+
+For MVP, Purify Shrine battles auto-designate a single hero as the **purifier**.
+Only this hero will use the `PURIFY_SHRINE` command; the rest of the party
+focuses on defending both the shrine and that purifier.
+
+A preferred post-MVP upgrade is to let the **Keeper** explicitly choose which
+hero will act as purifier at the start of the shrine stage. This creates a
+strong "protect the purifier" dynamic (who do you trust to guard the flame?)
+and gives more strategic weight to party composition.
+
+One possible progression:
+- Early realms: auto-selection only (current behavior).
+- Later, more demanding realms: unlock Keeper choice of purifier as an active
+  decision before the shrine waves begin.
+
 
 ---
 

@@ -123,6 +123,18 @@ static func complete_stage() -> Dictionary:
 	result["stage_rewards"] = applied_stage_reward
 	result["completion_rewards"] = completion_reward
 
+	# Enrich the result with realm/stage metadata so callers can produce
+	# consistent logs for any objective type (combat_trial, purify_shrine, etc.).
+	# This keeps RealmService generic and future-proof as new objectives appear.
+	if stage != null and _active_realm != null:
+		result["realm_id"] = _active_realm.id
+		result["realm_tier"] = _active_realm.tier
+		result["stage_index"] = stage.index
+		result["stage_objective_type"] = stage.objective_type
+		result["realm_finished"] = _active_realm.is_finished()
+	else:
+		result["realm_finished"] = false
+
 	return result
 
 

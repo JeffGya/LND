@@ -248,6 +248,69 @@ static func get_purify_shrine_passive_drain_per_wave(tier: int) -> int:
 	return amount
 
 # ---------------------------------------------------------
+# PURIFY SHRINE — TIERED PURIFY MODIFIERS
+# These helpers combine combat-side base knobs from GameBalance_HeroCombat
+# with realm-side per-tier scalars so later tiers can feel harsher while
+# keeping the underlying behavior consistent with canon.
+# ---------------------------------------------------------
+const PURIFY_SHRINE_PURIFY_DRAIN_SCALARS := {
+	# Multiplier applied on top of GameBalance_HeroCombat.SHRINE_PURIFY_BASE_DRAIN_REDUCTION.
+	# 1.0 = use the base value as-is for this tier.
+	# Values below 1.0 make Purify weaker (less drain reduction) on higher tiers.
+	1: 1.0,
+	2: 0.9,
+	3: 0.8,
+}
+
+const PURIFY_SHRINE_PURIFY_THRESHOLD_BY_TIER := {
+	# Fraction of shrine.hp_max at which Purify becomes available for this tier.
+	# These values are layered on top of GameBalance_HeroCombat.SHRINE_PURIFY_BASE_HP_THRESHOLD_FRACTION
+	# and can be used to make higher tiers feel more demanding.
+	1: 0.6, # Tier 1: Purify unlocks earlier (60% HP) to be more forgiving.
+	2: 0.5, # Tier 2: Neutral, matches the base threshold (50% HP).
+	3: 0.4, # Tier 3: Purify unlocks later (40% HP) to increase tension.
+}
+
+const PURIFY_SHRINE_MAX_PURIFY_PER_WAVE_BY_TIER := {
+	# Maximum number of successful Purify uses per wave for each tier.
+	# This is layered on top of GameBalance_HeroCombat.SHRINE_MAX_PURIFY_PER_WAVE_BASE.
+	# MVP keeps the same cap (1) across tiers, but the structure lets us
+	# tighten or loosen this in future balance passes.
+	1: 1,
+	2: 1,
+	3: 1,
+}
+
+static func get_purify_shrine_drain_reduction(tier: int) -> float:
+	## Returns the effective shrine drain reduction multiplier for a given tier.
+	## This combines the combat-side base reduction with a tier scalar so that
+	## higher tiers can make Purify feel weaker if desired.
+	var base: float = GameBalance_HeroCombat.SHRINE_PURIFY_BASE_DRAIN_REDUCTION
+	var scalars: Dictionary = PURIFY_SHRINE_PURIFY_DRAIN_SCALARS
+	if not scalars.has(tier):
+		tier = 1
+	var mul: float = float(scalars.get(tier, 1.0))
+	return base * mul
+
+static func get_purify_shrine_hp_threshold_fraction(tier: int) -> float:
+	## Returns the shrine HP fraction at which Purify becomes available for a tier.
+	## Falls back to tier 1 if the tier is not configured.
+	var table: Dictionary = PURIFY_SHRINE_PURIFY_THRESHOLD_BY_TIER
+	if not table.has(tier):
+		tier = 1
+	var fraction: float = float(table.get(tier, GameBalance_HeroCombat.SHRINE_PURIFY_BASE_HP_THRESHOLD_FRACTION))
+	return fraction
+
+static func get_purify_shrine_max_purify_per_wave(tier: int) -> int:
+	## Returns the maximum number of successful Purify uses allowed per wave
+	## for a given tier. This is layered on top of the combat-side base cap.
+	var table: Dictionary = PURIFY_SHRINE_MAX_PURIFY_PER_WAVE_BY_TIER
+	if not table.has(tier):
+		tier = 1
+	var max_count: int = int(table.get(tier, GameBalance_HeroCombat.SHRINE_MAX_PURIFY_PER_WAVE_BASE))
+	return max_count
+
+# ---------------------------------------------------------
 # DIFFICULTY TIERS (multipliers)
 # These are multipliers applied on top of hero/enemy baselines.
 # They also carry economy knobs (Ase/Ekwan reward) and fear pressure.

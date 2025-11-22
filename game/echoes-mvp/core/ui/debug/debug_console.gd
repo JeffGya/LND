@@ -136,6 +136,7 @@ func _register_default_commands() -> void:
 	CmdCombat.register(self, _commands)
 	_commands["/help"] = func(_args: Array) -> int:
 		_print_line("Commands:")
+		_print_line("  (Shrine) Use /test_shrine_stage for a quick Purify Shrine combat demo.")
 		for k in _commands.keys():
 			_print_line(" - %s" % String(k))
 		return 0
@@ -370,6 +371,12 @@ func _register_default_commands() -> void:
 				# "no artificial round cap"; we map that to a very high upper bound so
 				# battles effectively run until a true victory/defeat condition.
 				var combat_runner := func(hero_party: Array, enemies: Array, seed: int, max_rounds: int) -> Dictionary:
+					# Always create a fresh CombatEngine instance per invocation.
+					# For shrine stages, ObjectiveRunner will call this once per wave,
+					# so each wave gets its own engine and RNG context.
+					var eng := CombatEngine.new()
+					_current_eng = eng
+
 					var rounds: int = max_rounds
 					if rounds <= 0:
 						# MVP: treat non-positive max_rounds as "no cap" for Realm stages.
@@ -377,24 +384,34 @@ func _register_default_commands() -> void:
 						# battle due to the demo round limit, while still avoiding true
 						# infinite loops if something goes wrong.
 						rounds = 999
-					var eng := CombatEngine.new()
-					_current_eng = eng
-					var party_ids_local: Array[int] = []
-					for p in hero_party:
-						party_ids_local.append(int(p))
-					eng.start_battle(seed, party_ids_local, enemies, "defeat", rounds)
+
+					# hero_party may contain either hero ids (int) or prebuilt combatant
+					# descriptors (Dictionary, e.g. a shrine entity). Duplicate the array
+					# so each call/wave gets an isolated copy.
+					var allies_for_engine: Array = hero_party.duplicate()
+
+					# Choose objective based on stage type so shrine stages can use
+					# shrine-aware win/loss rules inside CombatEngine.
+					var objective := "defeat"
+					if stage_type == "purify_shrine":
+						objective = "purify_shrine"
+
+					eng.start_battle(seed, allies_for_engine, enemies, objective, rounds)
 					_apply_fear_overrides_to_engine(eng)
+
 					var log := CombatLog.new(16)
 					var round_count := 0
 					while not eng.is_over():
 						var snap: Dictionary = eng.step_round()
 						log.print_round(snap)
 						round_count += 1
+
 					var combat_res: Dictionary = {}
 					if eng.has_method("result"):
 						var raw: Variant = eng.result()
 						if typeof(raw) == TYPE_DICTIONARY:
 							combat_res = raw
+
 					combat_res["rounds"] = round_count
 					if not combat_res.has("success"):
 						var success_flag := true
@@ -493,6 +510,83 @@ func _register_default_commands() -> void:
 			_:
 				_print_line("Usage: /realm <help|list|new|show|enter|complete> [...]")
 				return 1
+
+	# --- Shrine stage QA helper command ---------------------------------------
+	_commands["/test_shrine_stage"] = func(_args: Array) -> int:
+		# Helper to quickly jump into a Purify Shrine stage for combat QA.
+		# Behaviour:
+		#  - If there is an active realm, it will look for the first stage
+		#    whose objective_type == "purify_shrine".
+		#  - If no active realm exists, it will create a default realm using
+		#    the first configured realm id from GameBalance_Realm and the
+		#    current campaign_seed, then search for a shrine stage.
+		#  - Once a shrine stage index is found, it delegates to the existing
+		#    /realm enter handler so party selection and ObjectiveRunner
+		#    behaviour remain identical.
+		var active := RealmServiceScript.get_active()
+		if active == null:
+			_print_line("[test_shrine_stage] no active realm; creating a default realm...")
+			var ids: Array = GameBalance_Realm.get_realm_ids()
+			if ids.is_empty():
+				_print_line("[test_shrine_stage] no realms configured in GameBalance_Realm")
+				return 1
+			var realm_id := String(ids[0])
+			var meta: Dictionary = GameBalance_Realm.get_realm_meta(realm_id)
+			var tier := int(meta.get("default_tier", 1))
+			if tier <= 0:
+				tier = 1
+			var info: Dictionary = Seedbook.get_all_seed_info()
+			var cs: int = int(info.get("campaign_seed", 0))
+			if cs == 0:
+				_print_line("[test_shrine_stage] warning: campaign_seed=0 (did you run /new_game or /load?)")
+			var realm_obj := RealmServiceScript.get_or_create(realm_id, tier, cs)
+			if realm_obj == null:
+				_print_line("[test_shrine_stage] failed to generate realm '%s' (check config id)" % realm_id)
+				return 1
+			RealmServiceScript.set_active(realm_obj)
+			active = realm_obj
+
+		# Find the first Purify Shrine stage in the active realm.
+		var total := active.stages.size()
+		var shrine_index := -1
+		for i in range(total):
+			var stg = active.stages[i]
+			if stg == null:
+				continue
+			if String(stg.objective_type) == "purify_shrine":
+				shrine_index = i
+				break
+
+		if shrine_index == -1:
+			_print_line("[test_shrine_stage] active realm has no Purify Shrine stage.")
+			return 1
+
+		_print_line("[test_shrine_stage] using realm '%s' (tier=%d, seed=%d), shrine_stage_index=%d" % [
+			String(active.id),
+			int(active.tier),
+			int(active.seed),
+			shrine_index
+		])
+
+		# Delegate to the existing /realm command's 'enter' subcommand so we
+		# reuse the same party selection and ObjectiveRunner wiring.
+		if not _commands.has("/realm"):
+			_print_line("[test_shrine_stage] internal error: /realm command not registered.")
+			return 1
+		var realm_cmd: Variant = _commands["/realm"]
+		if typeof(realm_cmd) != TYPE_CALLABLE:
+			_print_line("[test_shrine_stage] internal error: /realm handler is not callable.")
+			return 1
+
+		# Call the /realm command as if the Keeper had typed:
+		#   /realm enter <shrine_index>
+		var status: Variant = (realm_cmd as Callable).call(["enter", str(shrine_index)])
+		# Mirror status semantics from other commands: treat non-zero int as failure.
+		if typeof(status) == TYPE_INT:
+			return int(status)
+		elif typeof(status) == TYPE_BOOL:
+			return 0 if bool(status) else 1
+		return 0
 
 	# --- Summoning commands ---------------------------------------------------
 	_commands["/summon"] = func(args: Array) -> int:

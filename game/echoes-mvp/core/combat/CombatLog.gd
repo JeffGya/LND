@@ -473,7 +473,11 @@ static func _format_state_after_group(group: Array) -> String:
 		var max_hp: int = int((e as Dictionary).get("max_hp", 0))
 		var ko: bool = bool((e as Dictionary).get("ko", false))
 		var guard_val: int = int((e as Dictionary).get("guard", 0))
+		var is_shrine: bool = bool((e as Dictionary).get("is_shrine", false))
 		var tags: Array[String] = []
+		if is_shrine:
+			# Highlight shrine entries so Purify Shrine stages are easy to read in logs.
+			tags.append("SHRINE")
 		if ko:
 			tags.append("KO")
 		if guard_val > 0:

@@ -46,6 +46,12 @@ static func run_stage(
 	##    "success": bool,
 	##    "combat": Dictionary,   # raw result from combat harness (or stub)
 	##  }
+	# Ensure hero_party is an untyped Array so we can safely append
+	# special entities (like the shrine) even if the caller passed a
+	# typed array (e.g. Array[HeroModel]).
+	var hero_party_untyped: Array = []
+	hero_party_untyped.assign(hero_party)
+
 	var result: Dictionary = {
 		"objective_type": stage.objective_type if stage != null else "",
 		"realm_id": realm.id if realm != null else "",
@@ -63,9 +69,9 @@ static func run_stage(
 
 	match stage.objective_type:
 		"combat_trial":
-			return _run_combat_trial(realm, stage, hero_party, combat_runner, result)
+			return _run_combat_trial(realm, stage, hero_party_untyped, combat_runner, result)
 		"purify_shrine":
-			return _run_purify_shrine(realm, stage, hero_party, combat_runner, result)
+			return _run_purify_shrine(realm, stage, hero_party_untyped, combat_runner, result)
 		_:
 			# Unknown objective: treat as auto-success for MVP, but log it.
 			result["success"] = true
@@ -132,8 +138,8 @@ static func _run_purify_shrine(
 	##  - Multi-wave survival trial with a draining shrine:
 	##      * shrine_waves: how many waves must be cleared.
 	##      * shrine_hp_max: starting HP for the shrine.
-	##      * shrine_passive_drain_per_wave: shrine HP lost after each
-	##        successfully cleared wave (approximates the shrine timer).
+	##      * shrine_passive_drain_per_wave: legacy realm-side timer (now
+	##        superseded by per-round drain in CombatEngine).
 	##  - Wave success is determined by the combat harness "success" flag.
 	##  - Shrine fails if:
 	##      * any wave reports success=false, or
@@ -153,26 +159,48 @@ static func _run_purify_shrine(
 	var shrine_hp_max: int = int(stage.modifiers.get("shrine_hp_max", 100))
 	var shrine_hp: int = shrine_hp_max
 
-	var shrine_drain_per_wave: int = int(stage.modifiers.get("shrine_passive_drain_per_wave", 0))
 	var morale_drain_per_wave: int = int(stage.modifiers.get("morale_drain_per_wave", 0))
 
 	var waves_results: Array = []
 	var overall_success: bool = true
+	var waves_cleared: int = 0
+	var total_purify_uses: int = 0
+	var total_purified_waves: int = 0
+	var shrine_destroyed: bool = false
 
 	for wave_index in range(shrine_waves):
 		# Derive a deterministic seed per wave from the encounter_seed.
 		var wave_seed: int = stage.encounter_seed + wave_index
-		# Debug: mark the start of each shrine wave in the logs so it is
 		# clear when a new wave begins and which seed it uses.
 		print("[shrine] Wave %d/%d — seed=%d" % [wave_index + 1, shrine_waves, wave_seed])
 
 		# Build the enemy pack for this wave.
 		var enemies: Array = EnemyFactory.spawn_realm_pack(realm, stage)
 
+		# Build a shrine combat entity for this wave so the combat harness
+		# can treat the shrine as a real participant (HP, targeting, logs).
+		# HP values are normalized here so CombatEngine receives a clean,
+		# deterministic baseline and can hydrate its own stats block.
+		var shrine_hp_clamped: int = int(clamp(shrine_hp, 0, shrine_hp_max))
+		var shrine_ent: Dictionary = {
+			"id": -1,
+			"name": "Shrine",
+			"hp": shrine_hp_clamped,
+			"max_hp": shrine_hp_max,
+			"is_shrine": true,
+			"can_act": false,
+		}
+
+		# Compose the allies array for this wave: hero party + shrine entity.
+		# We duplicate the hero_party array so we do not mutate the caller’s
+		# list across waves.
+		var allies_for_wave: Array = hero_party.duplicate()
+		allies_for_wave.append(shrine_ent)
+
 		var combat_result: Dictionary = {}
 		if combat_runner != null and combat_runner.is_valid():
 			# Purify Shrine uses the same "no round cap" behavior as other Realm stages.
-			combat_result = combat_runner.call(hero_party, enemies, wave_seed, -1)
+			combat_result = combat_runner.call(allies_for_wave, enemies, wave_seed, -1)
 		else:
 			# Safe fallback: treat as auto-success if no harness is wired.
 			combat_result = {
@@ -197,23 +225,41 @@ static func _run_purify_shrine(
 			"purify_shrine_wave_%d" % (wave_index + 1)
 		)
 
+		# Allow the combat harness to report shrine HP and destruction if it
+		# understands shrine entities. For MVP this is optional so older
+		# harnesses still work without these fields.
+		if combat_result.has("shrine_hp_remaining"):
+			var shrine_hp_after_combat: int = int(combat_result.get("shrine_hp_remaining", shrine_hp))
+			shrine_hp = shrine_hp_after_combat
+
+		var wave_shrine_destroyed: bool = false
+		if combat_result.has("shrine_destroyed"):
+			wave_shrine_destroyed = bool(combat_result.get("shrine_destroyed", false))
+			if wave_shrine_destroyed:
+				shrine_hp = 0
+				shrine_destroyed = true
+
+		# Basic wave outcome flags.
 		var wave_success: bool = bool(combat_result.get("success", true))
-		if not wave_success:
-			# Party wiped (or harness reported failure) in this wave.
+
+		# Aggregate bookkeeping for summary/telemetry.
+		if wave_success and not wave_shrine_destroyed:
+			waves_cleared += 1
+
+		var wave_purify_uses: int = int(combat_result.get("purify_uses", 0))
+		if wave_purify_uses > 0:
+			total_purify_uses += wave_purify_uses
+
+		var wave_purified: bool = bool(combat_result.get("wave_purified", wave_purify_uses > 0))
+		if wave_purified:
+			total_purified_waves += 1
+
+		if not wave_success or wave_shrine_destroyed:
+			# Party wiped, harness reported failure, or shrine was destroyed
+			# inside combat; treat this as an immediate failure for the
+			# overall objective.
 			overall_success = false
 			break
-
-		# If the wave was successful, apply shrine passive HP drain.
-		if shrine_drain_per_wave != 0:
-			shrine_hp -= shrine_drain_per_wave
-			# Debug: show shrine HP after passive drain so the \"timer\" is
-			# visible while reading logs.
-			print("[shrine] Shrine HP after wave %d: %d/%d (drain=%d)" \
-				% [wave_index + 1, max(shrine_hp, 0), shrine_hp_max, shrine_drain_per_wave])
-			if shrine_hp <= 0:
-				# Shrine has fully drained before all waves were cleared.
-				overall_success = false
-				break
 
 		# Timing hook for shrine-specific morale drain. The actual morale
 		# adjustments will be implemented once EmotionService is available.
@@ -229,12 +275,35 @@ static func _run_purify_shrine(
 
 	# Wrap the per-wave results and shrine HP data into the combat field so
 	# callers can inspect each wave and shrine integrity if needed.
-	result["combat"] = {
+	var shrine_hp_clamped_end: int = max(shrine_hp, 0)
+	var combat_summary: Dictionary = {
 		"success": final_success,
 		"waves": waves_results,
 		"shrine_hp_max": shrine_hp_max,
-		"shrine_hp_end": max(shrine_hp, 0),
+		"shrine_hp_end": shrine_hp_clamped_end,
+		"shrine_destroyed": shrine_destroyed or shrine_hp_clamped_end <= 0,
+		"waves_cleared": waves_cleared,
+		"shrine_waves_required": shrine_waves,
 	}
+	if total_purify_uses > 0:
+		combat_summary["purify_uses_total"] = total_purify_uses
+	if total_purified_waves > 0:
+		combat_summary["waves_purified"] = total_purified_waves
+
+	result["combat"] = combat_summary
+
+	# Log a concise outcome summary for shrine stages so shrine runs are
+	# easy to read from the console.
+	var summary_line := "[shrine] Summary — success=%s, waves_cleared=%d/%d, shrine_hp=%d/%d" % [
+		str(final_success),
+		waves_cleared,
+		shrine_waves,
+		shrine_hp_clamped_end,
+		shrine_hp_max,
+	]
+	if total_purify_uses > 0:
+		summary_line += ", purify_uses=%d" % total_purify_uses
+	print(summary_line)
 
 	return result
 
