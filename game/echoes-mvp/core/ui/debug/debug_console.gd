@@ -1543,40 +1543,53 @@ func _register_default_commands() -> void:
 				return 0 if failed == 0 else 2
 
 			"realms":
-				# Lightweight wrapper around the realm tests in core/tests/realm/.
-				var T_gen = load("res://core/tests/realm/test_realm_generation.gd")
+				# Wrapper around the realm tests in core/tests/realm/ plus the
+				# generic combat entity tests in core/tests/combat/.
+				var any_failure := false
+
+				# --- Realm generation tests ---
+				var T_gen := load("res://core/tests/realm/test_realm_generation.gd")
 				if T_gen == null:
 					_print_line("[run_tests] realms: generation script not found at core/tests/realm/test_realm_generation.gd")
-					return 1
-				if not T_gen.has_method("run_all"):
+					any_failure = true
+				elif not T_gen.has_method("run_all"):
 					_print_line("[run_tests] realms: run_all() not found on generation script")
-					return 1
+					any_failure = true
+				else:
+					_print_line("[run_tests] realms: starting realm generation tests…")
+					T_gen.run_all()
 
-				var T_rewards = load("res://core/tests/realm/test_realm_rewards.gd")
+				# --- Realm rewards tests ---
+				var T_rewards := load("res://core/tests/realm/test_realm_rewards.gd")
 				if T_rewards == null:
 					_print_line("[run_tests] realms: rewards script not found at core/tests/realm/test_realm_rewards.gd")
-					return 1
-				if not T_rewards.has_method("run_all"):
+					any_failure = true
+				elif not T_rewards.has_method("run_all"):
 					_print_line("[run_tests] realms: run_all() not found on rewards script")
+					any_failure = true
+				else:
+					_print_line("[run_tests] realms: starting realm reward tests…")
+					T_rewards.run_all()
+
+				# --- Generic combat entity tests (structures/NPCs/objectives) ---
+				var T_generic_script := load("res://core/tests/combat/test_combat_generic_entities.gd")
+				if T_generic_script == null:
+					_print_line("[run_tests] realms: generic entity script not found at core/tests/combat/test_combat_generic_entities.gd")
+					any_failure = true
+				else:
+					var T_generic: Object = T_generic_script.new()
+					if not T_generic.has_method("run_all"):
+						_print_line("[run_tests] realms: run_all() not found on generic entity test instance")
+						any_failure = true
+					else:
+						_print_line("[run_tests] realms: starting generic entity tests…")
+						T_generic.run_all()
+
+				if any_failure:
+					_print_line("[run_tests] realms: one or more test scripts missing or invalid (see messages above)")
 					return 1
 
-				var shrine_script = load("res://core/tests/realm/test_purify_shrine.gd")
-				if shrine_script == null:
-					_print_line("[run_tests] realms: shrine script not found at core/tests/realm/test_purify_shrine.gd")
-					return 1
-				var T_shrine = shrine_script.new()
-				if not T_shrine.has_method("run_all"):
-					_print_line("[run_tests] realms: run_all() not found on shrine test instance")
-					return 1
-
-				_print_line("[run_tests] realms: starting realm generation tests…")
-				T_gen.run_all()
-				_print_line("[run_tests] realms: starting realm reward tests…")
-				T_rewards.run_all()
-				_print_line("[run_tests] realms: starting Purify Shrine objective tests…")
-				T_shrine.run_all()
-				_print_line("[run_tests] realms: completed (see PASS/FAIL lines above).")
-				# NOTE: realm tests report PASS/FAIL via push_error; we return 0 here.
+				_print_line("[run_tests] realms: all realm + generic entity tests invoked (see per-suite output above)")
 				return 0
 
 			"emotion":

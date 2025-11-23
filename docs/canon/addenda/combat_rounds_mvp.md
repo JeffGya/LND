@@ -1,460 +1,605 @@
 # ⚔️ Echoes of the Sankofa — MVP Combat Rounds Addendum
 
 **Canon Source:** Legacy Never Dies §§3, 4, 9, 12  
-**Directive:** Deterministic Fairness — same seed ⇒ same fight.
+**Directive:** Deterministic Fairness — *same seed ⇒ same fight*.
 
 ---
 
-## 1. Overview
-The MVP combat loop implements a **step-based autobattle** where both player and AI actions resolve in deterministic rounds. The player selects a valid party from available heroes; enemies are seeded dummy packs for now. Every round, order and outcomes remain fully reproducible from the campaign seed.
+## 1. Purpose & Scope
+
+This addendum defines how **MVP combat rounds** work in *Echoes of the Sankofa* after the
+**generic entities + orchestrator refactor** (Subtasks A → H).
+
+It answers for any new dev/AI:
+
+- How a **battle** is set up and advanced, step by step.
+- Which **modules** own which responsibilities.
+- How **morale & fear** affect actions and damage.
+- How **objectives** (combat_trial, purify_shrine) plug into the loop.
+- How to keep fights **deterministic** and **legible**.
+
+This document is the runtime companion to:
+- `combat_entities_mvp.md` (entity shape & tags)
+- `combat_engine_refactor.md` (module responsibilities)
+
+If behavior changes, **this file and those two must be updated together.**
+
+---
+
+## 2. High‑Level Loop
 
 **Philosophy:**  
-Guidance > Control — the Keeper curates who to send; Anansi’s game unfolds predictably and legibly.
+**Guidance > Control** — The Keeper chooses who to send and how to invest in them.
+Once the fight starts, Anansi’s game unfolds in a **deterministic, legible autobattle**.
+
+At a high level, a battle is:
+
+1. **Start Battle**
+   - Build combat state from realm stage, party, and config.
+   - Normalize all entities into the **generic entity model**.
+   - Capture **emotion baselines**.
+   - Build **objective context** for the stage.
+
+2. **Round Loop** (`step_round`)  
+   Repeat until an objective finishes or a round limit is reached:
+   
+   1. Build round context (round index, PRNG, objective info).
+   2. Compute **initiative order**.
+   3. For each actor in order:
+      - Check **fear‑driven refusal**.
+      - Choose actions (ally AI / enemy AI).
+      - Resolve actions and apply HP / statuses.
+      - Track fear gain from hits, focus fire, ally KOs.
+   4. Apply **KO fear** and the **round emotional tick** (fear + morale decay).
+   5. Let **CombatObjectives** evaluate end conditions.
+   6. Build a **round snapshot** and append logs.
+
+3. **End Battle**
+   - Final objective result (victory/defeat + reason).
+   - Final HP, KO status, shrine status, emotions.
+   - Deterministic log and snapshot trail.
 
 ---
 
-## 2. Round Phases
+## 3. Modules Involved (Runtime View)
 
-| Phase | Description | Source File |
-|:------|:-------------|:-------------|
-| **INITIATIVE** | Compute deterministic order for this round. | `core/combat/Initiative.gd` |
-| **SELECT** | Each actor (ally/enemy) chooses a major + minor action. | `core/combat/EchoActionChooser.gd` |
-| **RESOLVE** | Apply major, then minor actions (ATTACK, GUARD, etc.). | `core/combat/ActionResolver.gd` |
-| **TICK** | Apply fear increment + morale decay cadence. | `core/combat/CombatEngine.gd` |
-| **CHECK** | Evaluate victory/defeat/round-limit conditions. | `core/combat/CombatEngine.gd` |
+The combat round loop is now split across modules. **CombatEngine** only orchestrates:
 
-Each round produces a **snapshot** with:
-- `round` index
-- `order` list
-- `actions[]`
-- `ticks` {fear, morale_decay}
-- `state_after` (HP, KO, guard)
-- `end` (if applicable)
+- **`core/combat/CombatEngine.gd`** – Orchestrator
+  - `start_battle(stage, party, seed)`
+  - `step_round()`
+  - Holds the mutable `state` (entities, round index, objective context, snapshots).
+
+The orchestration calls into:
+
+- **`core/combat/CombatEntities.gd`** – Generic entity model
+  - Normalizes heroes, enemies, shrines, NPCs, summons, structures.
+  - Tag helpers (`has_tag`, `is_shrine`, `is_structure`, `is_objective`, …).
+  - HP read/write helpers.
+
+- **`core/combat/Initiative.gd`** – Initiative scoring
+  - Computes initiative per round from stats + seed.
+
+- **`core/combat/EchoActionChooser.gd`** – Ally action chooser (MVP AI)
+  - Chooses ATTACK / GUARD / PURIFY_SHRINE / REFUSE (morale) for allies.
+
+- **`core/combat/EnemyActionChooser.gd`** – Enemy AI
+  - Chooses ATTACK / GUARD for enemies.
+  - Implements shrine‑aware targeting when objective is a shrine.
+
+- **`core/combat/ActionResolver.gd`** – Action rules
+  - Resolves ATTACK, GUARD, PURIFY_SHRINE, REFUSE, KO.
+  - Applies morale multipliers.
+  - Exposes `should_refuse_turn(unit_dict)` for fear‑driven refusals.
+
+- **`core/combat/CombatEmotionSystem.gd`** – Morale & fear
+  - Baseline capture, round tick, KO fear, shrine wave morale drain.
+  - Builds final emotion results.
+
+- **`core/combat/CombatObjectives.gd`** – Objective logic
+  - `defeat` (combat_trial).
+  - `purify_shrine` (waves, shrine HP, Purify and drain tuning).
+  - Future: `escort_entity`, `defend_structure`, `destroy_target`, `multi_objective`.
+
+- **`core/combat/CombatSnapshotBuilder.gd`** – Snapshots
+  - Builds per‑round snapshots and a final snapshot.
+  - Builds name map and final state.
+
+- **`core/combat/CombatLog.gd`** – Log formatting
+  - Prints deterministic single‑line logs per action.
+
+- **Config:**
+  - `core/config/GameBalance_HeroCombat.gd` – morale, fear, shrine combat tuning, logging profiles.
+  - `core/config/GameBalance_Realm.gd` – realm + shrine tier tuning (HP, drain, morale penalties, rewards).
 
 ---
 
-## 3. Initiative Formula (MVP)
+## 4. Round Phases (Detailed)
 
-```
+Every `step_round` call advances combat through the same phases.
+
+| Phase | Description | Primary Owner |
+|:------|:------------|:--------------|
+| **INITIATIVE** | Compute deterministic order for this round. | `Initiative.gd` |
+| **FEAR CHECK** | For each acting entity, decide if fear forces refusal. | `ActionResolver.gd` + `CombatEmotionSystem.gd` |
+| **SELECT** | For non‑refusing actors, choose Major/Minor actions. | `EchoActionChooser.gd` / `EnemyActionChooser.gd` |
+| **RESOLVE** | Apply chosen actions (ATTACK, GUARD, PURIFY_SHRINE, REFUSE). | `ActionResolver.gd` |
+| **EMOTION TICK** | Apply KO fear, fear tick, and morale decay. | `CombatEmotionSystem.gd` |
+| **OBJECTIVE CHECK** | Determine victory/defeat/continue. | `CombatObjectives.gd` |
+| **SNAPSHOT** | Record the round summary + logs. | `CombatSnapshotBuilder.gd` + `CombatLog.gd` |
+
+The engine’s job is to call these phases in order and glue the results back into `state`.
+
+---
+
+## 5. Initiative Formula (MVP)
+
+**Goal:** same inputs ⇒ same initiative order.
+
+Conceptual formula:
+
+```text
 score = base + a*Courage + b*Wisdom + tiebreak(seed, hero_id, round_index)
 ```
-- `a` and `b` constants tuned in `CombatConstants.gd`.
-- Tiebreak uses seed XOR hero_id and round_index for stable ordering.
-- Result is **fully reproducible** given the same inputs.
+
+- `a` and `b` are tuning knobs in `CombatConstants.gd`.
+- Tiebreak uses a deterministic combination of the encounter seed, entity id, and
+  round index to avoid random ties.
+- Initiative is recomputed **every round**, so temporary buffs/debuffs can affect
+  turn order in future versions.
+
+The function lives in `Initiative.gd` and only depends on:
+- The combat seed (from realm stage).
+- The round index.
+- The entity’s stats (Courage/Wisdom, etc.).
 
 ---
 
-## 4. Action Types (Economy)
+## 6. Action Economy (MVP)
 
-Each combatant gets:
-- **1 Major Action:** ATTACK / REFUSE / INTERACT (stub)
-- **1 Minor Action:** GUARD / MOVE / INTERACT (stub)
+### 6.1 Per‑Round Budget
 
-### Major Actions
-| Type | Behavior |
-|------|-----------|
-| **ATTACK** | Deals base damage; affected by morale tier. |
-| **REFUSE** | Skips turn if Broken morale or fear ≥ threshold. |
+Each combatant can perform at most:
 
-### Minor Actions
-| Type | Behavior |
-|------|-----------|
-| **GUARD** | Adds guard_shield to target; reduces next dmg. |
-| **MOVE** | Stubbed for MVP; advances toward nearest target. |
+- **1 Major Action** (ATTACK / REFUSE / PURIFY_SHRINE / INTERACT stub)
+- **1 Minor Action** (GUARD / MOVE stub / INTERACT stub)
 
-**KO Handling:** hp ≤ 0 ⇒ mark `ko=true`. No permanent death (see §10 canon: “Loss as continuity”).
+In practice for MVP:
 
----
+- Heroes:
+  - **Major:** ATTACK or PURIFY_SHRINE or REFUSE.
+  - **Minor:** GUARD (MOVE/INTERACT reserved for future).
+- Enemies:
+  - **Major:** ATTACK.
+  - **Minor:** GUARD (shrine bias comes from target selection, not a different action).
+- Shrine:
+  - No actions at all; it is a defended structure, not an actor.
 
-## 5. Morale & Fear Knobs (MVP Values)
+The action budget is enforced in the orchestrator loop and resolvers; no action
+may be resolved twice in the same phase.
 
-| Variable | Description | Typical MVP Value | Source |
-|-----------|--------------|--------------------|--------|
-| `FEAR_PER_ROUND` | Base fear gain each round. | +1 | `CombatConstants.gd` |
-| `MORALE_DECAY_N_ROUNDS` | Interval of morale drop. | every 2 rounds | `CombatConstants.gd` |
-| Morale Tiers | Inspired (+20%), Steady (±0%), Shaken (−20%), Broken (REFUSE). | — | `CombatConstants.gd` |
+### 6.2 ATTACK & GUARD
 
-**Intended Feel:** gentle drift toward pressure without stalling combat.
+- **ATTACK**
+  - Uses Attack vs Defense with a simple, deterministic formula.
+  - Damage is modified by the attacker’s **morale tier**.
+  - For shrine stages, attacks against the shrine get a multiplier
+    (`SHRINE_ENEMY_DAMAGE_MULTIPLIER`).
 
----
+- **GUARD**
+  - Adds a guard value to the target.
+  - The next incoming damage is reduced based on accumulated guard.
+  - Guard is reset/decayed via the normal damage pipeline.
 
-## 5.1 Morale System Implementation (MVP Final)
+### 6.3 KO Handling
 
-**Canon Link:** §9 Combat, AI & Simulation → “Morale & Fear System”  
-**Implements:** “As the Keeper I want morale to affect output”
-
-During combat, each ally operates with a morale value (0–100) that affects their attack output.  
-Enemies currently ignore morale in MVP.
-
-| Tier | Range | Multiplier | Behavior |
-|:--|:--:|:--:|:--|
-| INSPIRED | 80–100 | × 1.10 | Attacks deal +10 % damage |
-| STEADY | 50–79 | × 1.00 | Baseline output |
-| SHAKEN | 30–49 | × 0.90 | Attacks deal −10 % damage |
-| BROKEN | 0–29 | — | Refuses major actions (enters REFUSE state) |
-
-**Files touched**
-- `core/combat/CombatConstants.gd` – Canonical thresholds & multipliers  
-- `core/combat/CombatEngine.gd` – Morale accessor and snapshot fields  
-- `core/combat/ActionResolver.gd` – Applies multiplier (+ BROKEN → REFUSE)  
-- `core/combat/CombatLog.gd` – Displays morale tags (+10 % / −10 %)  
-- `core/ui/debug/debug_console.gd` – QA commands `/morale_show`, `/morale_set`
-
-**Testing Tools**
-| Command | Purpose |
-|:--|:--|
-| `/morale_show` | Lists current ally morale and tier in combat |
-| `/morale_set <id> <0..100>` | Manually adjusts ally morale for QA |
-| `/fight_again` | Replays last battle to verify morale effects |
-
-**Design Notes**
-- Morale is combat‑state only in MVP. It resets to 50 each battle.  
-- Post‑battle persistence (“carry‑over morale”) is planned for post‑MVP.  
-- Deterministic: no RNG involved; same seed ⇒ same results.  
-- Broken enforcement is authoritative in resolver, not chooser.
+- When `hp_current <= 0`, entity is marked `ko = true` in its status.
+- KO units:
+  - Never act.
+  - May still appear in logs and snapshots for context.
+- MVP has **no permanent death** in combat; persistence is decided by
+  higher‑level systems per canon §10 “Loss as continuity”.
 
 ---
 
-## 5.2 Fear-Driven Refusal (MVP Final)
+## 7. Morale System (MVP Final)
 
-**Canon Link:** LND §4 Core Mechanics, §9 Combat, AI & Simulation (“Echo Behavior Matrix”), §12 Balance Curves  
-**Narrative Intent:** An echo that is too afraid does not always obey — the Keeper must see *why*.
+**Story:** *“As the Keeper I want morale to affect output.”*
 
-**Goal (story):** “As the Keeper I want fear to push refusal.”
+Combat tracks a **morale** value (0–100) per hero. Enemies are not yet using
+morale tiers in MVP.
 
-**What it does (runtime):**
+### 7.1 Morale Tiers & Effects
 
-1. Every combatant tracks a `fear` value (0–100).  
-2. At the start of a turn, **before** normal action selection and **before** morale-based refusals, the engine asks `ActionResolver.should_refuse_turn(unit_dict)`.  
-3. If fear is **below** the configured threshold, the unit acts normally.  
-4. If fear is **at or above** the threshold, we roll a refusal chance that scales with how far above the threshold the unit is.  
-5. On success, we do **not** go through the normal attack path. Instead we emit a fear outcome:
-   - **"refuse"** → unit skips its major action  
-   - **"guard"** → unit takes a defensive minor action on self (reuses existing GUARD resolver)  
-   - **(post-MVP)** **"abandon"/"retreat"** → *not part of MVP combat loop; see below*  
-6. All fear refusals are **logged** so the Keeper can see what happened.
+| Tier      | Range | Multiplier | Behavior |
+|-----------|:-----:|:----------:|----------|
+| INSPIRED  | 80–100| × 1.10     | +10% damage on ATTACK |
+| STEADY    | 50–79 | × 1.00     | Baseline output |
+| SHAKEN    | 30–49 | × 0.90     | −10% damage on ATTACK |
+| BROKEN    | 0–29  | —          | Cannot take major actions; uses REFUSE |
 
-**Balance source of truth:** `core/config/GameBalance_HeroCombat.gd`
+Implementation details:
+
+- Thresholds and multipliers live in `CombatConstants.gd`.
+- `CombatEmotionSystem.gd` is responsible for:
+  - Reading/writing morale on entities.
+  - Computing the **tier label**.
+- `ActionResolver.gd` is responsible for:
+  - Applying the multiplier on ATTACK.
+  - Translating BROKEN tier into a major‑action REFUSE.
+
+### 7.2 Morale Decay & Tick
+
+Round tick behavior:
+
+- Every N rounds (`MORALE_DECAY_N_ROUNDS` in `CombatConstants.gd`),
+  `CombatEmotionSystem.apply_round_tick` reduces morale by a small amount.
+- Additional morale effects may come from:
+  - Shrine wave drain (see §9.3).
+  - Future story events and skills.
+
+MVP baseline:
+
+| Variable                 | Typical MVP Value | Source |
+|--------------------------|-------------------|--------|
+| `MORALE_DECAY_N_ROUNDS`  | 2                 | `CombatConstants.gd` |
+| `MORALE_DECAY_PER_TICK`  | small negative    | `CombatConstants.gd` |
+
+Morale is **combat‑local** for MVP and resets to a neutral baseline
+per fight unless debug tools or save data override it.
+
+---
+
+## 8. Fear System & Refusal (MVP Final)
+
+**Story:** *“As the Keeper I want fear to push refusal.”*
+
+Fear adds a second axis of emotional pressure:
+
+- Every entity has `fear` (0–100).
+- Fear increases from:
+  - Taking hits.
+  - Being focus‑fired in the same round.
+  - Ally KOs.
+  - Round tick baseline.
+- High fear can cause a **fear‑driven refusal** of the turn, even if morale
+  is not yet Broken.
+
+### 8.1 Fear ⇒ Refusal Flow
+
+Execution order within a round:
+
+1. Initiative order decided.
+2. For each actor in order, `ActionResolver.should_refuse_turn(unit_dict)` is called.
+3. This function:
+   - Clamps fear to `[0, FEAR_MAX]`.
+   - Checks `FEAR_REFUSAL_THRESHOLD` (config in `GameBalance_HeroCombat.gd`).
+   - If below threshold → no fear refusal.
+   - If at/above threshold → compute refusal chance based on:
+     ```gdscript
+     FEAR_REFUSAL_BASE_CHANCE + 
+     FEAR_REFUSAL_PER_10_OVER * ((fear - FEAR_REFUSAL_THRESHOLD) / 10)
+     ```
+   - Uses the deterministic combat PRNG to roll.
+   - If roll passes, returns an outcome:
+     - **"refuse"** → skip major action.
+     - **"guard"** → take a defensive minor GUARD on self.
+4. CombatEngine applies this outcome via a small helper and logs it.
+5. If there is **no fear refusal**, normal major/minor selection proceeds.
+
+MVP deliberately **excludes** “retreat/abandon” from this path; abandoning the
+Sanctum or a run is a high‑severity event (canon §10) and will have its own
+separate trigger in future.
+
+### 8.2 Fear Gains
+
+Config lives in `GameBalance_HeroCombat.gd`:
 
 ```gdscript
 const FEAR_REFUSAL_THRESHOLD: int = 70
 const FEAR_MAX: int = 100
 const FEAR_REFUSAL_BASE_CHANCE: float = 0.35
 const FEAR_REFUSAL_PER_10_OVER: float = 0.05
-const FEAR_REFUSAL_ACTIONS: Array[String] = [
-    "refuse",
-    "guard"
-    # "retreat"  # POST-MVP: uses its own high-severity trigger
-]
 
-# Fear gain sources (MVP)
 const FEAR_PER_HIT: int = 2
 const FEAR_PER_ALLY_KO: int = 4
 const FEAR_PER_FOCUS_HIT: int = 1
+const FEAR_PER_ROUND: int = 1
 ```
 
-**Execution order (important):**
+- **Per hit:** every time an entity takes damage, fear increases.
+- **Focus fire:** being hit multiple times in one round adds extra fear.
+- **Ally KO:** when an ally drops to 0 HP in this round, surviving allies
+  gain fear.
+- **Tick:** round‑level bonus via `FEAR_PER_ROUND`.
 
-1. Initiative determined  
-2. **Fear check** (new)  
-3. If fear → refusal: emit fear action, log, continue to next actor  
-4. Else: normal action selection (attack / guard / stub)  
-5. Morale tick & decay  
-6. Victory/defeat checks
+`CombatEmotionSystem` owns how these increments are applied during the
+resolution and tick phases.
 
-This preserves the canon directive **“Guidance > Control”**: the Keeper chose the team, but Anansi’s web (fear/morale) still speaks.
+### 8.3 Debug Tools
 
-**Files touched (MVP):**
-- `core/config/GameBalance_HeroCombat.gd` — added fear → refusal block and fear gain constants.
-- `core/combat/ActionResolver.gd` — new helper `static func should_refuse_turn(unit: Dictionary) -> Dictionary` that clamps fear, pulls the config, rolls, and picks a mode (`"refuse"`/`"guard"`).
-- `core/combat/CombatEngine.gd` — in the actor loop, we now call the resolver **before** normal actions and apply the outcome through `_apply_fear_outcome(...)`; also wires fear gain for “got hit”, “got hit multiple times (focus)”, and “ally KO” in the same round.
-- `core/combat/CombatLog.gd` — added `add_refusal(...)` and taught the formatter to show fear data:  
-  `REFUSE Kwamena Amponsah  (fear_refusal, fear=80)`
-- `core/ui/debug/debug_console.gd` — added `/fear_show` and `/fear_set <id> <0..100>` for QA; later extended to persist fear across demo fights.
+`debug_console.gd` exposes:
 
-**Why we kept it deterministic:** the chance is computed from fear and a small roll inside the resolver, but the overall battle is still deterministic for a given seed because combat PRNG is already isolated for the round. Same seed ⇒ same fear events.
+- `/fear_show` – list current combat allies with their fear.
+- `/fear_set <id> <0..100>` – force hero fear, with in‑session persistence.
 
-**Fear gain (MVP):**
-- on **every hit**: +`FEAR_PER_HIT`
-- on **extra hits in the same round on the same target**: +`FEAR_PER_FOCUS_HIT`
-- on **ally KO this round**: every surviving ally +`FEAR_PER_ALLY_KO`
-- on **round tick**: existing `FEAR_PER_ROUND` still applies
+These commands are used heavily in QA to verify that refusal triggers at the
+expected thresholds.
 
-This ensures that 2–3 bad rounds are enough to reach the refusal threshold, which was the original Notion test goal (“At fear 70, refusal triggers in sample”).
+---
 
-**QA Commands (debug_console):**
+## 9. Purify Shrine as a Combat Scenario (MVP Final)
 
-- `/fear_show` → list current combat allies with their fear
-- `/fear_set 1 80` → force hero with id=1 to fear=80 (current fight + persisted for future demo fights)
-- `/fight_again` → re-run same fight, fear is re-applied
+**Story:** *“As the Keeper I want an actual shrine to protect, purify action and enemies that attack the shrine.”*
 
-**Persistence (MVP+ for tooling):**
+Purify Shrine is a **realm objective** that manifests as a special combat stage
+with an allied shrine structure and multiple enemy waves.
 
-- Console keeps an in-memory `_fear_overrides_persist` map so that setting fear once applies to every new `/fight_demo` in the same session.
-- `SaveService.gd` gained `hero_set_fear(id, value)` so fear can be written into the actual save roster.
-- The demo fight builder now reapplies persisted fear onto the newly created combat state, so the “I was scared in the last fight” feeling can be demonstrated.
+### 9.1 Realm Inputs (Balance Source of Truth)
 
-**Post-MVP: High-severity Abandon / Retreat**
+Realm tuning lives in `GameBalance_Realm.gd` under the `PURIFY_SHRINE` block.
+Combat treats this file as authoritative for **tier scaling**.
 
-During this user story we discovered that “retreat” should **not** be a casual outcome of normal fear refusal. Canonically, abandoning the party/sanctum is a *severe* act and must yield legacy value (see LND §10 “Loss as continuity”). Therefore:
+Helpers include:
 
-- MVP fear refusal only ever produces: **"refuse"** or **"guard"**.
-- **Abandon/retreat** is reserved for a **separate, higher-threshold trigger**, e.g.:
-  ```gdscript
-  const FEAR_ABANDON_THRESHOLD: int = 95
-  const FEAR_ABANDON_BASE_CHANCE: float = 0.35
-  ```
-- When triggered, combat should **signal** an abandon event (e.g. `notes: "fear_abandon_signal"`) but the *actual* removal from Sanctum / roster should be handled by the campaign/sanctum layer, not in combat.
-- This keeps combat MVP fair and readable, and keeps permanent loss tied to legacy recovery (Faith / Legacy Fragments) per canon §10.
+- `get_purify_shrine_hp(tier)`
+- `get_purify_shrine_passive_drain_per_wave(tier)`
+- `get_purify_morale_drain(tier)`
+- `get_purify_reward_mult(tier)`
+- `get_purify_shrine_drain_reduction(tier)`
+- `get_purify_shrine_hp_threshold_fraction(tier)`
+- `get_purify_shrine_max_purify_per_wave(tier)`
 
-## 5.3 Readable Combat Logs (MVP Final)
+### 9.2 Shrine as a Generic Entity
 
-**Canon Link:** LND §3, §4, §9, §12  
-**User Story:** *As the Keeper I want readable combat logs*
+Shrine is normalized by `CombatEntities` as:
 
-**Directive:** Every combat **action** must produce **exactly one single-line** entry.
-
-**Line shape (canonical):**
+```text
+["ally", "structure", "structure:defense", "objective", "objective:shrine"]
 ```
+
+Key points:
+
+- Shrine has `hp_current` and `hp_max` from `get_purify_shrine_hp(tier)`.
+- Shrine **never acts** (no actions chosen).
+- Enemy AI recognizes the shrine via tags and objective context.
+
+### 9.3 Enemy Behavior in Shrine Stages
+
+In Purify Shrine stages, `EnemyActionChooser`:
+
+- Defaults ATTACK targets to the **shrine** while it is alive.
+- Uses normal damage pipeline, then multiplies shrine damage by
+  `SHRINE_ENEMY_DAMAGE_MULTIPLIER` from `GameBalance_HeroCombat.gd`.
+- Falls back to normal targeting once the shrine is destroyed (for future
+  “fail‑but‑keep‑fighting” variants).
+
+### 9.4 Purify Action & Waves
+
+Purify is a **support Major Action** available only in Purify Shrine objectives:
+
+- Only available when:
+  - Objective type is `purify_shrine`.
+  - Shrine is alive.
+  - Shrine HP is below the **tier‑adjusted threshold** from
+    `get_purify_shrine_hp_threshold_fraction(tier)`.
+  - The designated **purifier hero** is off cooldown.
+  - The wave has not reached its max Purify count.
+
+On a successful Purify:
+
+- The current wave is marked as having a **Purify stack**.
+- At the **end of the wave**, when passive shrine drain is applied, that drain
+  is reduced by a multiplier combining:
+  - `SHRINE_PURIFY_BASE_DRAIN_REDUCTION` from `GameBalance_HeroCombat.gd`.
+  - `get_purify_shrine_drain_reduction(tier)` from realm balance.
+- Purify **does not restore HP**, it only reduces the *upcoming* drain.
+
+Between waves:
+
+- Shrine loses HP from passive drain.
+- Heroes suffer morale drain via `get_purify_morale_drain(tier)`.
+
+### 9.5 Purifier System (Designated Purifier, MVP)
+
+To keep the UX clean and emphasize story, shrine stages use a
+**designated purifier**:
+
+- At the **start of the stage**, `CombatEngine` asks `GameBalance_HeroCombat.gd`
+  to score each hero based on:
+  - Archetype (Devout gets a bonus).
+  - Faith.
+  - Wisdom.
+  - Morale (tiebreaker).
+- The highest‑scoring hero becomes the **purifier** for this stage.
+- Only this hero is allowed to take the `PURIFY_SHRINE` major action.
+- Per‑hero cooldown is `SHRINE_PURIFY_COOLDOWN_ROUNDS`.
+- Per‑wave cap is `get_purify_shrine_max_purify_per_wave(tier)` from realm.
+
+Post‑MVP, the Keeper may be allowed to **choose** the purifier explicitly
+(see §11.1).
+
+### 9.6 Objective Result
+
+`CombatObjectives` defines Purify Shrine success/failure:
+
+- **Success** if:
+  - All configured waves are cleared, and
+  - Shrine HP > 0 at the end of the last wave.
+
+- **Failure** if at any point:
+  - Shrine HP ≤ 0 ⇒ `reason = "shrine_destroyed"`.
+
+Reward multipliers and emotion outputs are derived from realm helpers and
+`CombatEmotionSystem` results.
+
+---
+
+## 10. Combat Logs & Snapshots (MVP Final)
+
+**Story:** *“As the Keeper I want readable combat logs.”*
+
+### 10.1 Single‑Line Action Logs
+
+Every **loggable** action produces exactly **one line**:
+
+```text
 <actor> <VERB> → <target?> <payload> <tags…>
 ```
-- If there is **no target**, omit the arrow.
-- The output is **deterministic** and driven entirely by config.
 
-**Loggable verbs (MVP):** `ATTACK`, `GUARD`, `REFUSE`, `KO`, `TICK`  
-(Controlled via `LOG_ACTIONS` in `core/config/GameBalance_HeroCombat.gd`.)
+- If there is no target, omit the arrow.
+- The line is fully deterministic; no ad‑hoc prints.
 
-**Payload mapping:**
+**Verbs (MVP):** `ATTACK`, `GUARD`, `REFUSE`, `TICK`, `KO`.
+
+Payload examples:
+
 - `ATTACK` → `dmg=<N>`
-- `GUARD` → `(+shield[=<N>])`
+- `GUARD` → `(+shield)`
 - `REFUSE` → `(fear_refusal, fear=<N>)` or `(morale_refusal, morale=<N>)`
-- `KO` → no extra payload (0 HP is conveyed by the tag)
 - `TICK` → `(round_tick)`
 
-**Tags (order intent):**
-1. **HP/status** — `[hp/max]` (e.g., `[29/40]`, or `[0/40]` when KO)
-2. **Guard** — `[guard=<N>]` (only when `N>0`)
-3. **Breakdown** — `[ATK <A> → DEF <D>]` (designer view)
+Tag ordering intent:
 
-> Tag visibility and presence are controlled **via verbosity profiles**.
+1. HP/status — `[hp/max]` or `[0/40 KO]`.
+2. Guard — `[guard=<N>]` (only if `N>0`).
+3. Designer breakdown — `[ATK <A> → DEF <D>]`.
 
-**Verbosity profiles & overrides:**
-- Declared in `GameBalance_HeroCombat.gd` under **COMBAT LOGGING (MVP)**:
-  - `LOGGING_PROFILES` → named profiles: `"mvp"`, `"designer"`, `"qa"`
-  - `LOG_PROFILE` → selects the active profile
-  - `LOG_OVERRIDE_SHOW_HP | _SHOW_GUARD | _SHOW_DMG_BREAKDOWN | _SHOW_INTERNAL` → per-flag hot overrides
-- Effective flags are resolved in the logger and applied uniformly.
+### 10.2 Verbosity Profiles
 
-**Examples (designer profile):**
+`GameBalance_HeroCombat.gd` defines:
+
+- `LOGGING_PROFILES` – named sets of flags; currently:
+  - `"mvp"` – minimal player‑facing (HP only).
+  - `"designer"` – HP + guard + breakdown.
+  - `"qa"` – designer + extra internal crumbs (future).
+- `LOG_PROFILE` – active profile.
+- Overrides:
+  - `LOG_OVERRIDE_SHOW_HP`
+  - `LOG_OVERRIDE_SHOW_GUARD`
+  - `LOG_OVERRIDE_SHOW_DMG_BREAKDOWN`
+  - `LOG_OVERRIDE_SHOW_INTERNAL`
+
+`CombatLog.gd` resolves the active flags per line and formats accordingly.
+
+### 10.3 Snapshots
+
+`CombatSnapshotBuilder.gd` builds a canonical payload per round:
+
+```gdscript
+{
+    "round": int,
+    "order": Array[int],          # entity ids
+    "actions": Array[Dictionary], # per actor
+    "ticks": {                    # fear, morale, shrine drain, etc.
+        "fear_tick": int,
+        "morale_decay": bool,
+        # shrine wave info, if any
+    },
+    "state_after": {              # HP/KO/guard per entity
+        "entities": Dictionary,
+    },
+    "end": Dictionary | null      # objective result if finished this round
+}
 ```
-Kobi Gyasi ATTACK → Training Wraith #1 dmg=8 [32/40] [ATK 12 → DEF 4]
-Training Wraith #2 GUARD → Training Wraith #1 (+shield) [guard=1] [18/40]
-Sarah Danquah REFUSE (fear_refusal, fear=80)
-```
 
-**MVP vs Designer behaviors:**
-- **mvp** → only HP tags; no guard stack; no ATK→DEF breakdown.
-- **designer** → HP + guard + ATK→DEF breakdown.
-- **qa** → same as designer; reserved for future internal tags (rolls/seed crumbs).
+The final snapshot includes:
 
-**Definition of Done (logs):**
-- Each **loggable** action yields **one** line; non-loggable actions yield **none**.
-- No blank lines; no `[guard=0]` tags; ordering is `HP → Guard → Breakdown` when visible.
-- Flipping any profile/override changes all lines on next run without code edits.
+- All per‑round snapshots.
+- `final_state` (entities, shrine, objectives, emotions).
+- `name_map` from entity id → final display name.
 
-**QA quick checks:**
-1. Set `LOG_PROFILE="mvp"` → attack lines show `dmg` + `[hp/max]` only.
-2. Set `LOG_PROFILE="designer"` → guard + breakdown tags appear.
-3. Set `LOG_OVERRIDE_SHOW_DMG_BREAKDOWN=false` (designer) → breakdown tag disappears, guard remains.
-4. Force refusal (`/fear_set <id> 80`) → `REFUSE (fear_refusal, fear=80)` single-line entry appears.
-
-## 5.4 Purify Shrine as Combat Scenario (MVP Layout)
-
-**Canon Link:** LND §4 Core Mechanics, §6 Realm Structure, §8 Economy, §9 Combat  
-**User Story:** *As the Keeper I want an actual shrine to protect, purify action and enemies that attack the shrine.*  
-**Epic:** Combat Simulation Core
-
-Purify Shrine is a **realm objective** that becomes a specific kind of combat encounter:
-
-- Realm side (already implemented) seeds shrine HP, passive drain per wave, morale drain, reward multiplier and wave count.  
-- Combat side (this epic) represents the shrine as a special combat entity, gives enemies a shrine-focused targeting bias, and exposes a **Purify** action that can soften shrine drain at the right time.
-
-### 5.4.1 Inputs from Realm Balance
-
-Realm-side numbers live in `core/config/GameBalance_Realm.gd` under the `PURIFY_SHRINE` block. Combat and ObjectiveRunner should treat these helpers as the single source of truth:
-
-- `get_purify_shrine_hp(tier)`  
-  → Max shrine HP for the stage tier (e.g. 100/135/170).  
-- `get_purify_shrine_passive_drain_per_wave(tier)`  
-  → How much shrine HP is lost automatically **between waves** (the coarse “timer”).  
-- `get_purify_morale_drain(tier)`  
-  → Morale loss per wave for participating heroes; drives EmotionService and refusal pressure.  
-- `get_purify_reward_mult(tier)`  
-  → Ase/Ekwan reward multiplier for shrine stages.  
-- `get_purify_shrine_drain_reduction(tier)`  
-  → Effective Purify **drain reduction multiplier** for this tier, combining combat base + tier scalar.  
-- `get_purify_shrine_hp_threshold_fraction(tier)`  
-  → Shrine HP fraction at which Purify becomes available (more forgiving on low tiers, harsher on high tiers).  
-- `get_purify_shrine_max_purify_per_wave(tier)`  
-  → Maximum number of successful Purify uses per wave for this tier.
-
-This keeps **tier scaling** in Realm, while Combat stays tier-agnostic and only asks “what are my knobs for this stage?”.
-
-### 5.4.2 Combat-Side Shrine Knobs
-
-Combat-global shrine tuning lives in `core/config/GameBalance_HeroCombat.gd` under the **PURIFY SHRINE (combat tuning)** section:
-
-- `SHRINE_ENEMY_DAMAGE_MULTIPLIER`  
-  → Enemies deal slightly **more damage** to the shrine than to heroes (e.g. 1.2×), making focused shrine attacks feel threatening.  
-- `SHRINE_PURIFY_BASE_DRAIN_REDUCTION`  
-  → Base fraction of shrine passive drain that remains after a successful Purify on a wave (e.g. 0.5 = 50% of normal drain). Tier scalars from Realm adjust this up/down.  
-- `SHRINE_PURIFY_BASE_HP_THRESHOLD_FRACTION`  
-  → Base shrine HP fraction where Purify becomes available (e.g. 0.5 = below 50% HP); Realm may shift this by tier.  
-- `SHRINE_PURIFY_COOLDOWN_ROUNDS`  
-  → Global per-hero cooldown in rounds after using Purify (same across tiers).  
-- `SHRINE_MAX_PURIFY_PER_WAVE_BASE`  
-  → Base cap on how many Purify uses can succeed per wave across all heroes (e.g. 1). Realm can tighten this per tier.
-
-Together, Realm + Combat form a two-layer dial:
-
-- Combat describes **what Purify is** and how shrine damage behaves in general.  
-- Realm describes **how intense** shrine stages feel at each tier by scaling those knobs.
-
-### 5.4.3 Shrine as a Combat Entity (Design Target for MVP)
-
-In shrine stages, the combat layer treats the shrine as a special allied unit:
-
-- Has `hp_current` and `hp_max` seeded from `get_purify_shrine_hp(tier)`.  
-- Marked with an `is_shrine` flag so AI and logs can recognize it.  
-- Does **not** act (no major/minor actions) — it is an object to defend, not a participant.  
-- Appears in combat state and logs so the Keeper can track its HP over time.
-
-Enemy AI for these stages:
-
-- If the objective is `purify_shrine` and the shrine is alive, ATTACK actions **default to the shrine** as their primary target.  
-- Damage against the shrine uses the normal damage pipeline, then multiplies by `SHRINE_ENEMY_DAMAGE_MULTIPLIER`.  
-- If the shrine is destroyed, enemies fall back to normal hero-targeting behavior.
-
-End condition (MVP target):
-
-- If shrine HP ≤ 0 at any point → immediate failure with reason `"shrine_destroyed"`, even if heroes are still standing.  
-- Success requires clearing all configured waves **and** keeping the shrine alive.
-
-
-### 5.4.4 Purify Action & Wave Drain
-
-Purify is a **support action** that manipulates shrine drain rather than dealing damage:
-
-- Only available if the current objective is `purify_shrine`.  
-- Only offered when shrine HP is below the tier-specific threshold from `get_purify_shrine_hp_threshold_fraction(tier)`.  
-- Has a per-hero cooldown of `SHRINE_PURIFY_COOLDOWN_ROUNDS` rounds.  
-- Once a hero successfully uses Purify on a wave, that wave is marked as `wave_purified = true` and the passive drain applied between waves is reduced using `get_purify_shrine_drain_reduction(tier)`.  
-- At most `get_purify_shrine_max_purify_per_wave(tier)` successful Purify actions may occur per wave across all heroes.
-
-Intended feel:
-
-- Early tiers: Purify unlocks earlier and is relatively strong, giving the Keeper a forgiving safety valve.  
-- Later tiers: Purify unlocks later and is weaker, increasing tension unless the Keeper invests in heroes/sanctum that bolster Purify-related stats.
-
-
-#### 5.4.4.1 MVP Purifier Assignment & Cooldown Logic (Final)
-
-MVP introduces an **auto-designated purifier** system:
-
-- At the *start of a Purify Shrine stage*, CombatEngine automatically selects exactly **one** hero to serve as the **Purifier** for the entire stage.
-- Selection heuristic is defined in `GameBalance_HeroCombat.gd` via scoring weights:
-  - Higher **Faith** → higher score
-  - **Devout** archetype → score bonus  
-  (Weights tunable in config.)
-- Only the designated purifier is allowed to use `PURIFY_SHRINE`.
-- Other heroes will *never* attempt Purify and will behave normally.
-
-**Cooldown & usage rules (final MVP behavior):**
-
-- Purify has a **global per-wave cap** (configurable): only a limited number of successful Purify uses may occur each wave.
-- Individual purifier has a **round-based cooldown** (`SHRINE_PURIFY_COOLDOWN_ROUNDS`).
-- Purify creates a **temporary reduction stack** for this wave only; stacks expire at the end of the wave.
-- Purify never restores shrine HP — it only *reduces that wave’s post-wave drain*.
-
-This matches the implemented behavior and provides predictable support pressure without introducing multi‑hero Purify clutter.
-
-### 5.4.5 Interaction with Morale & Fear
-
-Shrine stages are deliberately tuned to feel **emotionally heavy**:
-
-- `get_purify_morale_drain(tier)` applies morale penalties between waves, pushing heroes toward SHAKEN/BROKEN over time.  
-- Concentrated damage on one object (the shrine) tends to trigger more **fear-related refusal** as KO events and bad rounds stack up.  
-- The Keeper’s choice to spend a Purify (and when) directly affects how long heroes must endure under pressure.
-
-This keeps shrine encounters aligned with the core canon loop:
-
-- **Guidance > Control:** the Keeper chooses the party and whether to Purify; Echoes still respond to fear and morale.  
-- **Legacy > Grind:** shrine failures feed into Faith and story, not just numeric loss.
-
-## 6. Determinism Guarantees
-
-✅ Identical seed ⇒ identical battle order, choices, and outcomes.  
-✅ PRNG isolated to battle seed (no external randomness).  
-✅ All logs and snapshots can replay a fight exactly (`/fight_again`).  
-✅ No hidden state changes between runs.
+The `/fight_again` debug command replays a battle from its snapshot payload and
+seed and must reproduce the same fight.
 
 ---
 
-## 7. Debug Console Commands (QA / Player Demo)
+## 11. Debug Console & QA Tools
 
-| Command | Purpose | Example |
-|----------|----------|----------|
-| `/party_list` | Lists available heroes with traits & archetypes. | Shows only non-resting heroes. |
-| `/party_set <ids>` | Stages a valid party (max 3 heroes). | `/party_set 1 3 5` |
-| `/party_show` | Displays staged party with full info. | `/party_show` |
-| `/party_clear` | Clears current staged party. | — |
-| `/fight_demo [seed] [rounds] [--auto]` | Runs deterministic fight with dummy enemies. | `/fight_demo 0xABCD 5` |
-| `/fight_again` | Replays the exact last fight for verification. | `/fight_again` |
+All interactive testing lives in `core/ui/debug/debug_console.gd`.
 
-All commands live in `core/ui/debug/debug_console.gd`.
+### 11.1 Party & Fights
 
----
+- `/party_list` – list available heroes.
+- `/party_set <ids…>` – stage a valid party (max 3 heroes in MVP).
+- `/party_show` – show staged party with full info.
+- `/party_clear` – clear staged party.
+- `/fight_demo [seed] [rounds] [--auto]` – run a deterministic training fight.
+- `/fight_again` – replay the last fight.
 
-## 8. Future Extensions
+### 11.2 Emotions
 
-| Feature | Description |
-|----------|--------------|
-| **Realm Packs** | `EnemyFactory.spawn_realm_pack()` swaps dummy dummies for themed enemies without API changes. |
-| **Reactions / Conditions** | On-hit events, morale bursts, and conditional skills. |
-| **Persistence Hooks** | Return-to-Sanctum state updates post-battle. |
-| **UI Layer** | Animated timeline for round snapshots. |
+- `/morale_show` – show current morale and tier.
+- `/morale_set <id> <0..100>` – adjust morale for a hero.
+- `/fear_show` – show current fear.
+- `/fear_set <id> <0..100>` – adjust fear.
 
-### 8.1. Future: Keeper-chosen purifier (post-MVP)
-
-For MVP, Purify Shrine battles auto-designate a single hero as the **purifier**.
-Only this hero will use the `PURIFY_SHRINE` command; the rest of the party
-focuses on defending both the shrine and that purifier.
-
-A preferred post-MVP upgrade is to let the **Keeper** explicitly choose which
-hero will act as purifier at the start of the shrine stage. This creates a
-strong "protect the purifier" dynamic (who do you trust to guard the flame?)
-and gives more strategic weight to party composition.
-
-One possible progression:
-- Early realms: auto-selection only (current behavior).
-- Later, more demanding realms: unlock Keeper choice of purifier as an active
-  decision before the shrine waves begin.
-
+These commands are used during development to verify that logs, refusal, and
+Purify timing match the intended MVP behavior.
 
 ---
 
-## 9. Canon References
+## 12. Future Extensions (Post‑MVP)
 
-- **§3 Loop pacing** → defines readable cadence & visible rounds.
-- **§4 Core Mechanics** → establishes Major/Minor action economy.
-- **§5 Heroes / Personality** → refusal and morale pressure loops.
-- **§9 Combat AI & Simulation** → mandates deterministic seed behavior.
-- **§12 Balance Curves** → morale & fear as pacing variables.
+These are not implemented yet, but the current architecture is designed to
+support them with **new modules/config**, not new god‑scripts.
+
+### 12.1 New Objectives
+
+- **Escort entity** – keep a tagged escort target alive while moving through waves.
+- **Defend structure** – hold a gate/ward for a number of rounds.
+- **Destroy target** – break an enemy structure objective.
+- **Multi‑objective** – e.g. defend shrine *and* escort.
+
+All of these should only require new handlers in `CombatObjectives.gd` and
+additional tags in entity definitions.
+
+### 12.2 Keeper‑Chosen Purifier
+
+Currently, shrine stages auto‑select a purifier. Post‑MVP:
+
+- Keeper may explicitly choose the purifier at shrine stage start.
+- This adds a strong “protect the purifier” micro‑narrative.
+- Purifier selection UI can sit on top of the existing assignment hook.
+
+### 12.3 Richer Action Types
+
+- Skills, reactions, positional effects.
+- Personality‑colored behavior via archetypes.
+- Status effects and conditions (bleed, guard break, etc.).
+
+The action economy and orchestrator loop remain the same; only
+`ActionResolver`, `EchoActionChooser`, and `EnemyActionChooser` gain new cases.
 
 ---
 
-**Definition of Done**  
-This document matches code constants and behaviors for MVP.  
-Any future combat rebalances must update this addendum to stay canon-aligned.
+## 13. Canon References
+
+- **§3 Loop pacing** – visible rounds, readable cadence.
+- **§4 Core Mechanics** – major/minor action economy and deterministic seed use.
+- **§5 Heroes / Personality** – morale, fear, and refusal loops.
+- **§9 Combat AI & Simulation** – mandates deterministic combat resolution.
+- **§12 Balance Curves** – how morale and fear shape difficulty.
 
 ---
+
+## 14. Definition of Done (for this Addendum)
+
+This document is considered up to date when:
+
+- It matches the behavior of:
+  - `CombatEngine.gd` orchestration.
+  - `CombatEntities.gd` entity model & tags.
+  - `CombatEmotionSystem.gd` morale/fear rules.
+  - `CombatObjectives.gd` defeat + purify_shrine objectives.
+  - `EnemyActionChooser.gd` shrine targeting.
+  - `CombatSnapshotBuilder.gd` snapshot shape.
+  - `CombatLog.gd` output shape and logging profiles.
+- A new dev can, from this file plus `combat_entities_mvp.md` and
+  `combat_engine_refactor.md`, correctly implement:
+  - A new unit type using tags.
+  - A new objective type.
+  - A new stage type using existing round phases.
+
+Any change to combat round behavior **must** be reflected here as part of the
+story’s Definition of Done.

@@ -12,6 +12,9 @@
 # -----------------------------------------------------------------------------
 class_name CombatConstants
 
+# Preload hero combat balance config for mirrored constants.
+const HeroCombatBalance = preload("res://core/config/GameBalance_HeroCombat.gd")
+
 # --- Enums --------------------------------------------------------------------
 # Teams participating in combat.
 enum Team { ALLY, ENEMY }
@@ -27,11 +30,13 @@ enum MoraleTier { INSPIRED, STEADY, SHAKEN, BROKEN }
 
 # --- Tuning knobs (MVP, gentle values) ---------------------------------------
 # Fear accrues each round to slowly increase pressure.
-const FEAR_PER_ROUND: int = 1
+# NOTE: mirrored from GameBalance_HeroCombat so tuning has a single source of truth.
+const FEAR_PER_ROUND: int = HeroCombatBalance.COMBAT_FEAR_PER_ROUND
 
 # Every N rounds, morale decays by a tiny amount to push decisions.
-const MORALE_DECAY_EVERY_N_ROUNDS: int = 2
-const MORALE_DECAY_AMOUNT: int = 1
+# NOTE: mirrored from GameBalance_HeroCombat so tuning has a single source of truth.
+const MORALE_DECAY_EVERY_N_ROUNDS: int = HeroCombatBalance.COMBAT_MORALE_DECAY_EVERY_N_ROUNDS
+const MORALE_DECAY_AMOUNT: int = HeroCombatBalance.COMBAT_MORALE_DECAY_AMOUNT
 
 # Baseline damage math (class math will arrive later; keep MVP simple/legible).
 

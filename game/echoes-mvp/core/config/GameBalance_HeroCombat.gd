@@ -97,6 +97,11 @@ const COMBAT_ROUND_LIMIT: int = 6
 const COMBAT_FEAR_PER_ROUND: int = 1
 const COMBAT_BASE_MORALE: int = 50
 
+# Morale decay cadence — single source of truth for round-based morale decay.
+# (Mirrored by CombatConstants for legacy callers.)
+const COMBAT_MORALE_DECAY_EVERY_N_ROUNDS: int = 2
+const COMBAT_MORALE_DECAY_AMOUNT: int = 1
+
 # ---------------------------------------------------------
 # PURIFY SHRINE (combat tuning)
 # Source: Notion story “As the Keeper I want an actual shrine to protect,

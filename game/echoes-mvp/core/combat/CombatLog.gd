@@ -12,7 +12,7 @@ const SHOW_ATK_DEF_IN_LOG: bool = true
 const USE_CANON_FORMATTER: bool = true
 
 var _buffer: Array[Dictionary] = []
-var _max_snapshots: int = 10
+var _max_snapshots: int = 50
 
 static func _should_log(verb: String) -> bool:
 	return GameBalance_HeroCombat.LOG_ENABLED and verb in GameBalance_HeroCombat.LOG_ACTIONS
