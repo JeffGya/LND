@@ -28,6 +28,12 @@ enum RoundState { INITIATIVE, SELECT, RESOLVE, TICK, CHECK }
 # Coarse morale tiers. Numbers are mapped to these bands for readable behavior.
 enum MoraleTier { INSPIRED, STEADY, SHAKEN, BROKEN }
 
+# Objective identifiers (shared across realms/combat/objectives).
+# These are the canonical string ids used by Realm/Objective runners.
+const OBJECTIVE_DEFEAT_ENEMIES: String = "defeat_enemies"
+const OBJECTIVE_PROTECT_SHRINE: String = "protect_shrine"
+const OBJECTIVE_PROTECT_TOTEM: String = "protect_totem"
+
 # --- Tuning knobs (MVP, gentle values) ---------------------------------------
 # Fear accrues each round to slowly increase pressure.
 # NOTE: mirrored from GameBalance_HeroCombat so tuning has a single source of truth.

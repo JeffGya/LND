@@ -113,6 +113,10 @@ static func build_state_after(state: Dictionary, name_by_id: Dictionary) -> Dict
 			"morale": CombatEmotionSystem.get_morale(ent_a),
 			"morale_tier": CombatEmotionSystem.morale_tier_label(CombatEmotionSystem.get_morale(ent_a)),
 		}
+		# Add grid metadata
+		item["grid_pos"] = CombatEntities.get_grid_pos(ent_a)
+		item["is_shrine"] = CombatEntities.is_shrine(ent_a)
+		item["is_totem"] = CombatEntities.is_totem(ent_a)
 		out["allies"].append(item)
 
 	# Enemies: HP + guard, no morale (ignored in MVP)
@@ -132,6 +136,10 @@ static func build_state_after(state: Dictionary, name_by_id: Dictionary) -> Dict
 			"ko": ko_flag_e,
 			"guard": guard_val_e,
 		}
+		# Add grid metadata
+		item_e["grid_pos"] = CombatEntities.get_grid_pos(ent_e)
+		item_e["is_shrine"] = CombatEntities.is_shrine(ent_e)
+		item_e["is_totem"] = CombatEntities.is_totem(ent_e)
 		out["enemies"].append(item_e)
 
 	return out
@@ -156,6 +164,12 @@ static func build_round_snapshot(
 		"name_by_id": name_by_id,
 		"state_after": build_state_after(state, name_by_id),
 		"objective_context": state.get("objective_context", {}),
+		"board_cols": int(state.get("board_cols", 0)),
+		"board_rows": int(state.get("board_rows", 0)),
+		"board_meta": {
+			"cols": int(state.get("board_cols", 0)),
+			"rows": int(state.get("board_rows", 0)),
+		},
 	}
 	return snapshot
 

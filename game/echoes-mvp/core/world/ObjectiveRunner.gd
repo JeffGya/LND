@@ -18,7 +18,9 @@ class_name ObjectiveRunner
 ##    so it can seed its RNG however it likes, but outputs are stable
 ##    for the same inputs.
 
+
 const EnemyFactory = preload("res://core/combat/EnemyFactory.gd")
+const HeroBal = preload("res://core/config/GameBalance_HeroCombat.gd")
 
 
 static func run_stage(
@@ -34,9 +36,18 @@ static func run_stage(
 	##  - stage: StageModel (objective_type, encounter_seed, modifiers)
 	##  - hero_party: Array of heroes in the shape expected by the combat harness
 	##  - combat_runner: Callable that runs combat:
-	##        func(hero_party: Array, enemies: Array, seed: int, max_rounds: int) -> Dictionary
-	##    For Realm stages we pass max_rounds = -1 to indicate \"no artificial round cap\" 
-	##    (combat should run until a true victory/defeat condition is reached).
+	##        func(
+	##          hero_party: Array,
+	##          enemies: Array,
+	##          seed: int,
+	##          max_rounds: int,
+	##          objective_type: String,
+	##          stage_modifiers: Dictionary
+	##        ) -> Dictionary
+	##    For Realm stages we pass max_rounds = -1 to indicate "no artificial round cap"
+	##    (combat should run until a true victory/defeat condition is reached), and we
+	##    always provide the stage.objective_type and stage.modifiers so the harness
+	##    can configure CombatEngine (objective, grid usage, etc.) appropriately.
 	##
 	## Output shape (MVP):
 	##  {
@@ -103,7 +114,14 @@ static func _run_combat_trial(
 		# We delegate seeding to the harness by passing encounter_seed.
 		# For Realm stages, we disable the demo round cap by passing max_rounds = -1,
 		# so combat runs until a true victory/defeat condition is reached.
-		combat_result = combat_runner.call(hero_party, enemies, stage.encounter_seed, -1)
+		combat_result = combat_runner.call(
+			hero_party,
+			enemies,
+			stage.encounter_seed,
+			-1,
+			stage.objective_type,
+			stage.modifiers
+		)
 	else:
 		# Safe fallback for MVP if no harness is wired yet.
 		combat_result = {
@@ -161,6 +179,11 @@ static func _run_purify_shrine(
 
 	var morale_drain_per_wave: int = int(stage.modifiers.get("morale_drain_per_wave", 0))
 
+	# Track final ally/shrine positions between waves so we can request
+	# that the combat harness preserves them on subsequent waves.
+	var last_ally_positions_by_id: Dictionary = {}
+	var has_last_positions: bool = false
+
 	var waves_results: Array = []
 	var overall_success: bool = true
 	var waves_cleared: int = 0
@@ -171,8 +194,26 @@ static func _run_purify_shrine(
 	for wave_index in range(shrine_waves):
 		# Derive a deterministic seed per wave from the encounter_seed.
 		var wave_seed: int = stage.encounter_seed + wave_index
-		# clear when a new wave begins and which seed it uses.
+		# Clear when a new wave begins and which seed it uses.
 		print("[shrine] Wave %d/%d — seed=%d" % [wave_index + 1, shrine_waves, wave_seed])
+
+		# Clone stage modifiers for this wave so we can inject per-wave
+		# data (like preserved grid positions) without mutating the
+		# original StageModel modifiers.
+		var stage_modifiers_for_wave: Dictionary = stage.modifiers.duplicate(true)
+		if has_last_positions:
+			stage_modifiers_for_wave["ally_positions_by_id"] = last_ally_positions_by_id
+			stage_modifiers_for_wave["preserve_positions"] = true
+
+		# Decide shrine grid position for this wave. By default we use the
+		# shared anchor from GameBalance_HeroCombat, but if we have a
+		# remembered position for the shrine entity id (-1) from a
+		# previous wave, reuse that so shrine location feels continuous.
+		var shrine_grid_pos: Vector2i = HeroBal.COMBAT_SHRINE_GRID_POS
+		if has_last_positions and last_ally_positions_by_id.has(-1):
+			var shrine_pos_v: Variant = last_ally_positions_by_id.get(-1)
+			if typeof(shrine_pos_v) == TYPE_VECTOR2I:
+				shrine_grid_pos = shrine_pos_v
 
 		# Build the enemy pack for this wave.
 		var enemies: Array = EnemyFactory.spawn_realm_pack(realm, stage)
@@ -189,6 +230,10 @@ static func _run_purify_shrine(
 			"max_hp": shrine_hp_max,
 			"is_shrine": true,
 			"can_act": false,
+			# Grid placement for Purify Shrine: use the calculated (possibly persisted) position.
+			"grid_pos": shrine_grid_pos,
+			# Canonical shrine tags so the generic entity model and objectives can reason about it.
+			"tags": ["ally", "structure", "structure:defense", "objective", "objective:shrine"],
 		}
 
 		# Compose the allies array for this wave: hero party + shrine entity.
@@ -200,7 +245,14 @@ static func _run_purify_shrine(
 		var combat_result: Dictionary = {}
 		if combat_runner != null and combat_runner.is_valid():
 			# Purify Shrine uses the same "no round cap" behavior as other Realm stages.
-			combat_result = combat_runner.call(allies_for_wave, enemies, wave_seed, -1)
+			combat_result = combat_runner.call(
+				allies_for_wave,
+				enemies,
+				wave_seed,
+				-1,
+				stage.objective_type,
+				stage_modifiers_for_wave
+			)
 		else:
 			# Safe fallback: treat as auto-success if no harness is wired.
 			combat_result = {
@@ -238,6 +290,31 @@ static func _run_purify_shrine(
 			if wave_shrine_destroyed:
 				shrine_hp = 0
 				shrine_destroyed = true
+
+		# Capture final ally + shrine grid positions from the combat
+		# result (if provided) so we can request position preservation
+		# on the next wave. This relies on the combat harness attaching
+		# a `final_state` dictionary in the standard CombatEngine shape.
+		if combat_result.has("final_state"):
+			var final_state_v: Variant = combat_result.get("final_state")
+			if typeof(final_state_v) == TYPE_DICTIONARY:
+				var final_state: Dictionary = final_state_v
+				var allies_final_v: Variant = final_state.get("allies", [])
+				if typeof(allies_final_v) == TYPE_ARRAY:
+					var allies_final: Array = allies_final_v
+					last_ally_positions_by_id.clear()
+					for ent_v in allies_final:
+						if ent_v == null or typeof(ent_v) != TYPE_DICTIONARY:
+							continue
+						var ent: Dictionary = ent_v
+						var id_val: int = int(ent.get("id", -1))
+						# Allow shrine id (-1) to be tracked as well.
+						if id_val < -1:
+							continue
+						var pos_v: Variant = ent.get("grid_pos", null)
+						if typeof(pos_v) == TYPE_VECTOR2I:
+							last_ally_positions_by_id[id_val] = pos_v
+					has_last_positions = last_ally_positions_by_id.size() > 0
 
 		# Basic wave outcome flags.
 		var wave_success: bool = bool(combat_result.get("success", true))

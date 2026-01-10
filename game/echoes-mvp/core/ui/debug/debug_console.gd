@@ -366,11 +366,11 @@ func _register_default_commands() -> void:
 
 				# Local combat harness wrapper (hero_party = party ids for CombatEngine).
 				# Signature matches ObjectiveRunner's expected combat_runner:
-				#   func(hero_party: Array, enemies: Array, seed: int, max_rounds: int) -> Dictionary
+				#   func(hero_party: Array, enemies: Array, seed: int, max_rounds: int, objective_type: String, stage_modifiers: Dictionary) -> Dictionary
 				# For Realm stages, ObjectiveRunner passes max_rounds = -1 to indicate
 				# "no artificial round cap"; we map that to a very high upper bound so
 				# battles effectively run until a true victory/defeat condition.
-				var combat_runner := func(hero_party: Array, enemies: Array, seed: int, max_rounds: int) -> Dictionary:
+				var combat_runner := func(hero_party: Array, enemies: Array, seed: int, max_rounds: int, objective_type: String, stage_modifiers: Dictionary) -> Dictionary:
 					# Always create a fresh CombatEngine instance per invocation.
 					# For shrine stages, ObjectiveRunner will call this once per wave,
 					# so each wave gets its own engine and RNG context.
@@ -390,13 +390,8 @@ func _register_default_commands() -> void:
 					# so each call/wave gets an isolated copy.
 					var allies_for_engine: Array = hero_party.duplicate()
 
-					# Choose objective based on stage type so shrine stages can use
-					# shrine-aware win/loss rules inside CombatEngine.
-					var objective := "defeat"
-					if stage_type == "purify_shrine":
-						objective = "purify_shrine"
-
-					eng.start_battle(seed, allies_for_engine, enemies, objective, rounds)
+					# Start battle with provided objective_type and modifiers.
+					eng.start_battle(seed, allies_for_engine, enemies, objective_type, rounds, stage_modifiers)
 					_apply_fear_overrides_to_engine(eng)
 
 					var log := CombatLog.new(16)
@@ -406,6 +401,23 @@ func _register_default_commands() -> void:
 						log.print_round(snap)
 						round_count += 1
 
+					# Capture the engine's final_state (if present) so ObjectiveRunner can
+					# preserve ally/shrine positions between shrine waves.
+					var final_state: Dictionary = {}
+					var st_v: Variant = null
+					if eng.has_method("get_state"):
+						st_v = eng.get_state()
+					else:
+						st_v = eng.get("_state")
+					if typeof(st_v) == TYPE_DICTIONARY:
+						var st: Dictionary = st_v
+						var last_snap_v: Variant = st.get("last_snapshot", {})
+						if typeof(last_snap_v) == TYPE_DICTIONARY:
+							var last_snap: Dictionary = last_snap_v
+							var fs_v: Variant = last_snap.get("final_state", {})
+							if typeof(fs_v) == TYPE_DICTIONARY:
+								final_state = fs_v
+
 					var combat_res: Dictionary = {}
 					if eng.has_method("result"):
 						var raw: Variant = eng.result()
@@ -413,6 +425,9 @@ func _register_default_commands() -> void:
 							combat_res = raw
 
 					combat_res["rounds"] = round_count
+					# Thread through final_state for multi-wave objectives (Purify Shrine).
+					if not final_state.is_empty():
+						combat_res["final_state"] = final_state
 					if not combat_res.has("success"):
 						var success_flag := true
 						if combat_res.has("outcome"):

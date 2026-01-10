@@ -168,6 +168,7 @@ const LOG_ENABLED: bool = true
 const LOG_ACTIONS: Array[String] = [
     "ATTACK",
     "GUARD",
+    "MOVE",
     "REFUSE",
     "PURIFY_SHRINE",
     "KO",
@@ -247,6 +248,69 @@ const FEAR_REFUSAL_ACTIONS: Array[String] = [
 # Fear gain sources (MVP)
 # These are used by CombatEngine to actually push units toward the refusal threshold.
 # If these are too low, fear-based refusal will basically never trigger in short fights.
+# Fear gain sources (MVP)
+# These are used by CombatEngine to actually push units toward the refusal threshold.
+# If these are too low, fear-based refusal will basically never trigger in short fights.
 const FEAR_PER_HIT: int = 2        # when a unit is successfully hit
 const FEAR_PER_ALLY_KO: int = 4    # when an ally goes down/KO
 const FEAR_PER_FOCUS_HIT: int = 1  # extra when same unit is hit multiple times in one round
+
+# ---------------------------------------------------------
+# COMBAT GRID & OBJECTIVES (MVP)
+# Source: invisible_grid_combat.md and Protect Totem objective design.
+# These values define the default invisible board layout and basic
+# objective anchor positions for MVP. All combat placement logic
+# should read from here instead of hard-coding sizes or columns.
+# ---------------------------------------------------------
+# Board dimensions for the invisible combat grid.
+# cols = horizontal size (x), rows = vertical size (y).
+# MVP default: 6x3 lanes, enough for clear "left vs right" staging.
+const COMBAT_BOARD_COLS: int = 6
+const COMBAT_BOARD_ROWS: int = 3
+
+# Default spawn columns for each side. Allies spawn on the left,
+# enemies on the right. Placement helpers in CombatEngine will
+# distribute entities within these columns using simple row patterns.
+const COMBAT_ALLY_SPAWN_COLUMNS: Array[int] = [0, 1]
+const COMBAT_ENEMY_SPAWN_COLUMNS: Array[int] = [4, 5]
+
+# Shrine-specific enemy spawn columns.
+# For shrine objectives we want each wave to arrive from the far edge of the board.
+# MVP: use the rightmost column only so enemies must "rush in".
+const COMBAT_SHRINE_ENEMY_SPAWN_COLUMNS: Array[int] = [COMBAT_BOARD_COLS - 1]
+
+# Default anchor positions for static objectives on the board.
+# These are used by Purify Shrine and Protect Totem (static variant)
+# to decide where the shrine/totem structure should appear.
+#
+# Coordinate system:
+#   x => column, increasing left → right
+#   y => row,     increasing top  → bottom
+#
+# MVP: both shrine and totem share the same anchor cell so they can
+# reuse the same "screen" hero placement patterns.
+const COMBAT_SHRINE_GRID_POS: Vector2i = Vector2i(1, 1)
+const COMBAT_TOTEM_STATIC_GRID_POS: Vector2i = Vector2i(1, 1)
+
+# ---------------------------------------------------------
+# PROTECT TOTEM (combat tuning)
+# Source: invisible_grid_combat.md and "Protect Totem" MVP design.
+# These values define per-round combat behavior for totems that
+# are already present in a stage (HP and tier scaling live in
+# GameBalance_Realm.gd).
+# ---------------------------------------------------------
+const TOTEM_PASS_COOLDOWN_ROUNDS: int = 2
+# Number of full combat rounds that must pass after a successful
+# PASS_TOTEM action before the totem can be passed again.
+
+const TOTEM_INVULN_DURATION_ROUNDS: int = 1
+# Number of rounds the totem is immune to direct damage immediately
+# after a PASS_TOTEM action resolves.
+
+const TOTEM_BURDEN_ATK_PENALTY_FRACTION: float = 0.2
+# While a hero is carrying the totem, their effective ATK may be
+# reduced by this fraction (i.e. 0.2 = -20%) by the combat layer.
+
+const TOTEM_BURDEN_AGI_PENALTY_FRACTION: float = 0.15
+# While a hero is carrying the totem, their effective AGI / initiative
+# contribution may be reduced by this fraction (0.15 = -15%).

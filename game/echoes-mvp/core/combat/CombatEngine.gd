@@ -39,13 +39,27 @@ var _morale_overrides: Dictionary = {}
 # --- Public API ---------------------------------------------------------------
 
 ## Initializes a deterministic battle state. Allies may be ids (ints) or dicts.
-func start_battle(battle_seed: int, allies: Array, enemies: Array[Dictionary], objective: String = "defeat", round_limit: int = 10) -> void:
+func start_battle(
+		battle_seed: int,
+		allies: Array,
+		enemies: Array[Dictionary],
+		objective: String = "defeat",
+		round_limit: int = 10,
+		stage_modifiers: Dictionary = {}
+	) -> void:
 	_state = {
 		"seed": battle_seed,
 		"round": 1,
 		"over": false,
 		"objective": objective,
 		"round_limit": max(1, round_limit),
+		# --- Board/grid metadata from GameBalance_HeroCombat ---
+		"board_cols": HeroBal.COMBAT_BOARD_COLS,
+		"board_rows": HeroBal.COMBAT_BOARD_ROWS,
+		"ally_spawn_columns": HeroBal.COMBAT_ALLY_SPAWN_COLUMNS,
+		"enemy_spawn_columns": HeroBal.COMBAT_ENEMY_SPAWN_COLUMNS,
+		"shrine_grid_pos": HeroBal.COMBAT_SHRINE_GRID_POS,
+		"totem_static_grid_pos": HeroBal.COMBAT_TOTEM_STATIC_GRID_POS,
 		"attack_range": 1,  # MVP: everyone is adjacent unless a distance map is provided by caller
 		"allies": _normalize_allies(allies),
 		"enemies": _normalize_enemies(enemies),
@@ -58,11 +72,38 @@ func start_battle(battle_seed: int, allies: Array, enemies: Array[Dictionary], o
 		"shrine_purify_cd_remaining": 0,
 		"shrine_purify_stacks": [],
 		"designated_purifier_id": -1,
+		"stage_modifiers": stage_modifiers,
 	}
 	# Apply any persisted morale overrides into the freshly built state
 	_apply_morale_overrides()
 	CombatEmotionSystem.capture_baseline(_state)
 	_assign_designated_purifier()
+	# Apply any persisted grid positions from stage_modifiers so multi-wave
+	# objectives (e.g. Purify Shrine) can preserve hero/shrine locations
+	# between waves. Positions are keyed by combat entity id.
+	var ally_positions_raw: Variant = stage_modifiers.get("ally_positions_by_id", null)
+	if typeof(ally_positions_raw) == TYPE_DICTIONARY:
+		var ally_positions: Dictionary = ally_positions_raw
+		var allies_arr: Array = _state.get("allies", [])
+		for i in range(allies_arr.size()):
+			var ent_v: Variant = allies_arr[i]
+			if ent_v == null or typeof(ent_v) != TYPE_DICTIONARY:
+				continue
+			var ent: Dictionary = ent_v
+			var id_val: int = int(ent.get("id", -1))
+			# Allow special negative ids (e.g. shrine uses id=-1) to be restored.
+			if id_val < -1:
+				continue
+			if ally_positions.has(id_val):
+				var pos_v: Variant = ally_positions.get(id_val, null)
+				if typeof(pos_v) == TYPE_VECTOR2I:
+					CombatEntities.set_grid_pos(ent, pos_v)
+					allies_arr[i] = ent
+		_state["allies"] = allies_arr
+	# After applying any restored positions, place entities for this objective.
+	# For preserve_positions shrine waves, _auto_place_entities_for_objective()
+	# will place enemies only and keep allies/shrine intact.
+	_auto_place_entities_for_objective()
 	_state["objective_context"] = CombatObjectives.build_objective_context(_state)
 
 ## Steps one round through INITIATIVE → SELECT → RESOLVE → TICK → CHECK.
@@ -143,6 +184,11 @@ func step_round() -> Dictionary:
 			action = EchoActionChooser.choose_action(ent_dict, ctx)
 		else:
 			action = EnemyActionChooser.choose_action(ent_dict, ctx)
+
+		# C2: per-turn movement on the invisible grid.
+		# If the chosen action is melee-based and the target is out of range,
+		# this helper may convert it into a MOVE and perform a 1-cell step.
+		_maybe_apply_greedy_step(action, actor_id)
 
 		# Apply via resolver according to action type
 		var t := int(action.get("type", -1))
@@ -284,8 +330,650 @@ func result() -> Dictionary:
 func get_state() -> Dictionary:
 	return _state.duplicate(true)
 
+
 # --- Internal helpers --------------------------------------------------------
 
+
+# --- Board/grid helpers ----------------------------------------------
+# These helpers and the associated state keys form the *public contract* for
+# the invisible grid:
+#   - `board_cols`, `board_rows`
+#   - `ally_spawn_columns`, `enemy_spawn_columns`
+#   - `shrine_grid_pos`, `totem_static_grid_pos`
+#
+# They are populated once in `start_battle()` from GameBalance_HeroCombat and
+# then treated as authoritative for the lifetime of the battle. Callers should
+# query them via these helpers instead of reaching into `_state` directly.
+#
+# All helpers are intentionally tiny and defensive. They do not assume that
+# board metadata has already been configured; if board_cols/board_rows are
+# missing or zero, they simply treat the board as "non-existent" so callers
+# can early-out safely.
+
+func _get_board_cols(state: Dictionary) -> int:
+	# Returns configured board_cols from the given state dictionary, or 0 if
+	# not present or invalid. Using state.get(...) keeps this tolerant of
+	# older battles that don't yet carry grid metadata.
+	if typeof(state) != TYPE_DICTIONARY:
+		return 0
+	return int(state.get("board_cols", 0))
+
+func _get_board_rows(state: Dictionary) -> int:
+	# Returns configured board_rows from the given state dictionary, or 0 if
+	# not present or invalid.
+	if typeof(state) != TYPE_DICTIONARY:
+		return 0
+	return int(state.get("board_rows", 0))
+
+func is_inside_board(pos: Vector2i, state: Dictionary) -> bool:
+	# True if the given grid position lies within the configured board
+	# rectangle. If the board is not configured yet (cols/rows <= 0), this
+	# returns false for all positions.
+	var cols := _get_board_cols(state)
+	var rows := _get_board_rows(state)
+	if cols <= 0 or rows <= 0:
+		return false
+	return pos.x >= 0 and pos.x < cols and pos.y >= 0 and pos.y < rows
+
+func clamp_to_board(pos: Vector2i, state: Dictionary) -> Vector2i:
+	# Clamps the given grid position into the valid board rectangle. If the
+	# board is not configured yet (cols/rows <= 0), this returns the input
+	# position unchanged so callers don't accidentally fabricate coordinates.
+	var cols := _get_board_cols(state)
+	var rows := _get_board_rows(state)
+	if cols <= 0 or rows <= 0:
+		return pos
+	return Vector2i(
+		clamp(pos.x, 0, cols - 1),
+		clamp(pos.y, 0, rows - 1)
+	)
+
+func cycle_row(index: int, state: Dictionary) -> int:
+	# Utility for placement helpers: cycles an arbitrary index into a valid
+	# row index using the configured board_rows. If rows are not configured
+	# yet (rows <= 0), this returns the original index so test harnesses and
+	# legacy callers can still pass integers through without crashing.
+	var rows := _get_board_rows(state)
+	if rows <= 0:
+		return index
+	# Use modulo to wrap into [0, rows-1].
+	return index % rows
+
+# --- Board/grid wrappers ----------------------------------------------
+# Thin engine-level helpers that operate on the current `_state` and delegate
+# position math to CombatEntities. These are intentionally small so that
+# ActionResolver, EnemyActionChooser and future objective logic can ask the
+# engine simple spatial questions without touching `_state` internals.
+
+func get_board_size() -> Vector2i:
+	# Returns the current board size as a Vector2i(cols, rows). If the board
+	# is not configured yet, this returns (0, 0).
+	var cols := _get_board_cols(_state)
+	var rows := _get_board_rows(_state)
+	return Vector2i(cols, rows)
+
+func get_entity_grid_pos(entity_id: int) -> Vector2i:
+	# Convenience wrapper: resolves an entity by id from the current `_state`
+	# and returns its grid_pos via CombatEntities.get_grid_pos. If no such
+	# entity exists or it has no grid_pos, returns GRID_POS_UNSET.
+	var ent: Variant = _find_entity(entity_id)
+	if ent == null or typeof(ent) != TYPE_DICTIONARY:
+		return CombatEntities.GRID_POS_UNSET
+	return CombatEntities.get_grid_pos(ent as Dictionary)
+
+func get_distance_between_entities(a_id: int, b_id: int) -> int:
+	# Convenience wrapper for Manhattan distance between two entities on the
+	# current board. Returns -1 if either entity is missing or unplaced.
+	var a: Variant = _find_entity(a_id)
+	var b: Variant = _find_entity(b_id)
+	if a == null or typeof(a) != TYPE_DICTIONARY:
+		return -1
+	if b == null or typeof(b) != TYPE_DICTIONARY:
+		return -1
+	return CombatEntities.grid_distance_between_entities(a as Dictionary, b as Dictionary)
+
+
+func entities_are_adjacent(a_id: int, b_id: int) -> bool:
+	# Returns true if two entities are in melee range (same cell or 4-neighbour)
+	# according to their grid_pos values.
+	var a: Variant = _find_entity(a_id)
+	var b: Variant = _find_entity(b_id)
+	if a == null or typeof(a) != TYPE_DICTIONARY:
+		return false
+	if b == null or typeof(b) != TYPE_DICTIONARY:
+		return false
+	return CombatEntities.entities_are_adjacent(a as Dictionary, b as Dictionary)
+
+# --- Spatial query helpers ---------------------------------------------
+# These helpers provide higher-level spatial queries on top of the
+# lower-level wrappers above. They are intended for ActionResolver,
+# EnemyActionChooser and objective logic so they can ask simple questions
+# ("who is on this cell?", "who is the closest enemy?") without recreating
+# grid math or digging into `_state`.
+
+func get_entities_at_pos(pos: Vector2i, alive_only: bool = true) -> Array:
+	# Returns all entities (allies + enemies) currently occupying the given
+	# grid cell. When `alive_only` is true, KO entities are filtered out.
+	var all: Array = []
+	all.append_array(_state.get("allies", []))
+	all.append_array(_state.get("enemies", []))
+	if all.is_empty():
+		return []
+	return CombatEntities.find_entities_at(all, pos, alive_only)
+
+func get_allies_at_pos(pos: Vector2i, alive_only: bool = true) -> Array:
+	# Returns all allies occupying the given grid cell. When `alive_only`
+	# is true, KO allies are filtered out.
+	var allies: Array = _state.get("allies", [])
+	if allies.is_empty():
+		return []
+	return CombatEntities.find_entities_at(allies, pos, alive_only)
+
+func get_enemies_at_pos(pos: Vector2i, alive_only: bool = true) -> Array:
+	# Returns all enemies occupying the given grid cell. When `alive_only`
+	# is true, KO enemies are filtered out.
+	var enemies: Array = _state.get("enemies", [])
+	if enemies.is_empty():
+		return []
+	return CombatEntities.find_entities_at(enemies, pos, alive_only)
+
+func get_closest_enemy_to(entity_id: int, alive_only: bool = true) -> Dictionary:
+	# Returns the closest enemy entity (by Manhattan distance) to the given
+	# entity id, or an empty dictionary if no suitable enemy exists or the
+	# origin entity is not placed on the board.
+	var origin_pos: Vector2i = get_entity_grid_pos(entity_id)
+	if origin_pos == CombatEntities.GRID_POS_UNSET:
+		return {}
+	var enemies: Array = _state.get("enemies", [])
+	if enemies.is_empty():
+		return {}
+	var found = CombatEntities.find_closest_entity_to_pos(enemies, origin_pos, alive_only)
+	if found == null:
+		return {}
+	return found
+
+func get_closest_ally_to(entity_id: int, alive_only: bool = true) -> Dictionary:
+	# Returns the closest ally entity (by Manhattan distance) to the given
+	# entity id, or an empty dictionary if no suitable ally exists or the
+	# origin entity is not placed on the board.
+	var origin_pos: Vector2i = get_entity_grid_pos(entity_id)
+	if origin_pos == CombatEntities.GRID_POS_UNSET:
+		return {}
+	var allies: Array = _state.get("allies", [])
+	if allies.is_empty():
+		return {}
+	var found = CombatEntities.find_closest_entity_to_pos(allies, origin_pos, alive_only)
+	if found == null:
+		return {}
+	return found
+
+
+func can_entity_move(entity_id: int) -> bool:
+	# Returns true if the given entity is allowed to move on the grid in
+	# the current battle. MVP rules:
+	#   - entity must exist and be alive
+	#   - shrines and other non-mobile structures are treated as immobile
+	#   - an explicit `can_move = false` flag on the entity disables movement
+	var ent_v: Variant = _find_entity(entity_id)
+	if ent_v == null or typeof(ent_v) != TYPE_DICTIONARY:
+		return false
+	var ent: Dictionary = ent_v
+	if not CombatEntities.is_alive(ent):
+		return false
+	# Structures like shrines are stationary.
+	if CombatEntities.is_shrine(ent):
+		return false
+	if ent.has("can_move"):
+		return bool(ent.get("can_move", true))
+	return true
+
+# --- C3.1 engine-level spatial helpers for AI/objective logic ---------------
+# These helpers provide targeting and counting logic for use by AI and objectives.
+# They operate directly on the current `_state`.
+
+func get_melee_targets_for(entity_id: int, side: String, alive_only: bool = true) -> Array:
+	# C3.1 helper: Returns all adjacent entities from the opposing side for
+	# the given entity_id. `side` describes the origin entity's allegiance
+	# ("ALLY" / "ENEMY"). Used by AI/objectives for melee targeting.
+	# If side is unknown, we defensively search both sides.
+	var origin_v: Variant = _find_entity(entity_id)
+	if origin_v == null or typeof(origin_v) != TYPE_DICTIONARY:
+		return []
+	var origin: Dictionary = origin_v
+
+	var pool: Array = []
+	if side == "ALLY" or side == "allies":
+		pool = _state.get("enemies", [])
+	elif side == "ENEMY" or side == "enemies":
+		pool = _state.get("allies", [])
+	else:
+		# Defensive: search both sides if the side string is unexpected.
+		pool = []
+		var allies = _state.get("allies", [])
+		if typeof(allies) == TYPE_ARRAY:
+			pool.append_array(allies)
+		var enemies = _state.get("enemies", [])
+		if typeof(enemies) == TYPE_ARRAY:
+			pool.append_array(enemies)
+
+	if pool.is_empty():
+		return []
+
+	var matches: Array = []
+	for ent in pool:
+		if typeof(ent) != TYPE_DICTIONARY:
+			continue
+		if alive_only and not CombatEntities.is_alive(ent):
+			continue
+		if CombatEntities.entities_are_adjacent(origin, ent):
+			matches.append(ent)
+
+	return matches
+
+func get_nearest_enemy_for(entity_id: int, alive_only: bool = true) -> Dictionary:
+	# C3.1 helper: Returns the nearest enemy entity to the given entity_id, or {} if none found.
+	var origin_pos: Vector2i = get_entity_grid_pos(entity_id)
+	if origin_pos == CombatEntities.GRID_POS_UNSET:
+		return {}
+	var side := _side_of(entity_id)
+	var pool: Array = []
+	if side == "ALLY":
+		pool = _state.get("enemies", [])
+	elif side == "ENEMY":
+		pool = _state.get("allies", [])
+	else:
+		pool = _state.get("enemies", [])
+	if pool.is_empty():
+		return {}
+	var found = CombatEntities.find_closest_entity_to_pos(pool, origin_pos, alive_only)
+	if found == null:
+		return {}
+	return found
+
+func get_nearest_ally_for(entity_id: int, alive_only: bool = true) -> Dictionary:
+	# C3.1 helper: Returns the nearest ally entity to the given entity_id, or {} if none found.
+	var origin_pos: Vector2i = get_entity_grid_pos(entity_id)
+	if origin_pos == CombatEntities.GRID_POS_UNSET:
+		return {}
+	var allies: Array = _state.get("allies", [])
+	if allies.is_empty():
+		return {}
+	var found = CombatEntities.find_closest_entity_to_pos(allies, origin_pos, alive_only)
+	if found == null:
+		return {}
+	return found
+
+func get_alive_counts() -> Dictionary:
+	# C3.1 helper: Returns a dictionary with counts of alive allies and enemies.
+	var allies_alive := 0
+	var enemies_alive := 0
+	for ent in _state.get("allies", []):
+		if typeof(ent) == TYPE_DICTIONARY and CombatEntities.is_alive(ent):
+			allies_alive += 1
+	for ent in _state.get("enemies", []):
+		if typeof(ent) == TYPE_DICTIONARY and CombatEntities.is_alive(ent):
+			enemies_alive += 1
+	return { "allies": allies_alive, "enemies": enemies_alive }
+
+
+# --------------------------------------------------------------------------
+# Per-turn movement (C2): Greedy step and action conversion helpers
+# --------------------------------------------------------------------------
+
+func _compute_step_towards(origin: Vector2i, target: Vector2i) -> Vector2i:
+	# C2 helper: returns the next grid cell when taking a 1-tile
+	# greedy Manhattan step from `origin` toward `target`.
+	# Preference order:
+	#   1) Horizontal step that reduces |dx|
+	#   2) Vertical step that reduces |dy|
+	# If origin == target, returns origin unchanged.
+	var dx: int = target.x - origin.x
+	var dy: int = target.y - origin.y
+	var next: Vector2i = origin
+
+	if dx != 0 and abs(dx) >= abs(dy):
+		var step_x: int = 0
+		if dx > 0:
+			step_x = 1
+		else:
+			step_x = -1
+		next.x += step_x
+	elif dy != 0:
+		var step_y: int = 0
+		if dy > 0:
+			step_y = 1
+		else:
+			step_y = -1
+		next.y += step_y
+
+	return next
+
+
+func _maybe_apply_greedy_step(action: Dictionary, actor_id: int) -> void:
+	# Called from step_round() before resolving a major action.
+	# If the action is a melee-style ATTACK (or shrine purification attack)
+	# and the target is not within attack_range on the grid, we convert the
+	# action into a 1-cell MOVE toward the target for this turn.
+	if typeof(action) != TYPE_DICTIONARY:
+		return
+
+	# Only care about ATTACK-like actions.
+	var t: int = int(action.get("type", -1))
+	if t != CombatConstants.ActionType.ATTACK and t != CombatConstants.ActionType.PURIFY_SHRINE:
+		return
+
+	# Quick board sanity: if the board is not configured, we do not try to
+	# apply grid-based movement so legacy/non-grid battles keep working.
+	var cols: int = _get_board_cols(_state)
+	var rows: int = _get_board_rows(_state)
+	if cols <= 0 or rows <= 0:
+		return
+
+	# Actor must be allowed to move in this battle.
+	if not can_entity_move(actor_id):
+		return
+
+	# We need a concrete target id to walk toward. Be tolerant of older
+	# action shapes that may use `enemy_id` or `target` instead.
+	var target_id: int = -1
+	if action.has("target_id"):
+		# Preferred modern shape: explicit target id.
+		target_id = int(action.get("target_id", -1))
+	elif action.has("enemy_id"):
+		# Older ATTACK shapes sometimes used `enemy_id`.
+		target_id = int(action.get("enemy_id", -1))
+	elif action.has("target"):
+		# Be tolerant of legacy `target` fields that may already be an id.
+		target_id = int(action.get("target", -1))
+
+	# Shrine-aware fallback: for Purify Shrine / Protect Shrine style objectives,
+	# some enemy ATTACK intents may not carry a concrete target id even though
+	# they conceptually aim at the shrine. In those cases, we resolve the shrine
+	# entity from the current state and walk toward it using the same greedy
+	# movement rules as for hero-vs-enemy melee.
+	if target_id < 0:
+		var objective_s: String = String(_state.get("objective", ""))
+		var is_shrine_objective := (
+			objective_s == "purify_shrine" or
+			objective_s == CombatConstants.OBJECTIVE_PROTECT_SHRINE
+		)
+		if is_shrine_objective and _side_of(actor_id) == "ENEMY":
+			var shrine_ent: Dictionary = CombatEntities.find_alive_shrine(_state.get("allies", []))
+			if shrine_ent.size() > 0:
+				var shrine_id: int = int(shrine_ent.get("id", -1))
+				if shrine_id >= 0:
+					target_id = shrine_id
+					action["target_id"] = shrine_id
+
+	# If we still do not have a valid target id, we cannot apply a spatial
+	# step safely; fall back to the original ATTACK behavior.
+	if target_id < 0:
+		return
+
+	# Normalise: make sure `target_id` is present so later code
+	# (resolver/logging) can rely on it.
+	action["target_id"] = target_id
+
+	# Read positions from the current engine state.
+	var from_pos: Vector2i = get_entity_grid_pos(actor_id)
+	var target_pos: Vector2i = get_entity_grid_pos(target_id)
+
+	# If the actor itself is not placed on the board, we cannot move it.
+	if from_pos == CombatEntities.GRID_POS_UNSET:
+		return
+
+	# Shrine/objective fallback:
+	# In some shrine stages, the shrine entity id used for targeting may not
+	# resolve cleanly back into a placed entity (e.g. legacy ids or snapshots).
+	# If the direct lookup failed, but this is a shrine-style objective, try
+	# to resolve the shrine entity directly from the current allies array and
+	# use its grid_pos as the movement target.
+	if target_pos == CombatEntities.GRID_POS_UNSET:
+		var objective_s: String = String(_state.get("objective", ""))
+		var is_shrine_objective := (
+			objective_s == "purify_shrine" or
+			objective_s == CombatConstants.OBJECTIVE_PROTECT_SHRINE
+		)
+		if is_shrine_objective:
+			var shrine_ent: Dictionary = CombatEntities.find_alive_shrine(_state.get("allies", []))
+			if shrine_ent.size() > 0:
+				target_pos = CombatEntities.get_grid_pos(shrine_ent)
+
+	# If we still do not have a valid target position, bail out.
+	if target_pos == CombatEntities.GRID_POS_UNSET:
+		return
+
+	# If already in range (Manhattan distance <= attack_range), do not convert
+	# to MOVE; the attack can resolve as normal.
+	var attack_range: int = int(_state.get("attack_range", 1))
+	var dist: int = abs(target_pos.x - from_pos.x) + abs(target_pos.y - from_pos.y)
+	if dist <= attack_range:
+		return
+
+	# Greedy Manhattan step toward target:
+	var dx: int = target_pos.x - from_pos.x
+	var dy: int = target_pos.y - from_pos.y
+	var next_pos: Vector2i = from_pos
+
+	# Prefer horizontal closing first, then vertical.
+	if abs(dx) >= abs(dy):
+		if dx != 0:
+			next_pos.x += sign(dx)
+	else:
+		if dy != 0:
+			next_pos.y += sign(dy)
+
+	# Clamp into board bounds (defensive).
+	next_pos = clamp_to_board(next_pos, _state)
+
+	# If the step does not actually change position, bail.
+	if next_pos == from_pos:
+		return
+
+	# Blocked? If there are alive entities in the target cell other than
+	# our intended target, we don't move this turn.
+	var occupants: Array = get_entities_at_pos(next_pos, true)
+	var blocked := false
+	for e in occupants:
+		if typeof(e) != TYPE_DICTIONARY:
+			continue
+		var eid: int = int((e as Dictionary).get("id", -1))
+		if eid != target_id:
+			blocked = true
+			break
+	if blocked:
+		return
+
+	# Resolve the actor entity and update its grid_pos in-place.
+	var ent: Variant = _find_entity(actor_id)
+	if ent == null or typeof(ent) != TYPE_DICTIONARY:
+		return
+	CombatEntities.set_grid_pos(ent as Dictionary, next_pos)
+
+	# Rewrite the action to be a MOVE for this turn.
+	# We keep target_id so logs can still mention the intended target.
+	action["original_type"] = t
+	action["type"] = CombatConstants.ActionType.MOVE
+
+	# Canonical movement keys (used by the new logger):
+	action["from_pos"] = from_pos
+	action["to_pos"] = next_pos
+
+	# Legacy keys for older code paths / loggers:
+	action["moved_from"] = from_pos
+	action["moved_to"] = next_pos
+
+# --- Spawn columns and anchor position helpers --------------------------------
+
+func get_ally_spawn_columns() -> Array:
+	# Returns the configured ally spawn columns from the current state.
+	# If the state does not yet carry this metadata or it is malformed,
+	# returns an empty array so callers can safely iterate.
+	var cols = _state.get("ally_spawn_columns", [])
+	if typeof(cols) == TYPE_ARRAY:
+		return cols
+	return []
+
+func get_enemy_spawn_columns() -> Array:
+	# Returns the configured enemy spawn columns from the current state.
+	# If the state does not yet carry this metadata or it is malformed,
+	# returns an empty array so callers can safely iterate.
+	var cols = _state.get("enemy_spawn_columns", [])
+	if typeof(cols) == TYPE_ARRAY:
+		return cols
+	return []
+
+func get_shrine_grid_pos() -> Vector2i:
+	# Returns the configured shrine anchor position from the current state.
+	# If no shrine position is configured or the value is not a Vector2i,
+	# returns GRID_POS_UNSET so callers can treat it as "no shrine on board".
+	var pos = _state.get("shrine_grid_pos", CombatEntities.GRID_POS_UNSET)
+	if typeof(pos) == TYPE_VECTOR2I:
+		return pos
+	return CombatEntities.GRID_POS_UNSET
+
+
+func get_totem_static_grid_pos() -> Vector2i:
+	# Returns the configured static totem anchor position from the current state.
+	# If no totem position is configured or the value is not a Vector2i,
+	# returns GRID_POS_UNSET so callers can treat it as "no static totem".
+	var pos = _state.get("totem_static_grid_pos", CombatEntities.GRID_POS_UNSET)
+	if typeof(pos) == TYPE_VECTOR2I:
+		return pos
+	return CombatEntities.GRID_POS_UNSET
+
+# --- Shared lane / placement helpers -----------------------------------------
+# These helpers provide a single, deterministic way to place entities on the
+# invisible board using the configured spawn columns. They are intentionally
+# generic so any objective (combat_trial, purify_shrine, protect_totem, etc.)
+# can reuse them without re‑implementing grid math.
+#
+# Rules (MVP):
+#   - Entities are placed column‑first using the provided spawn_columns.
+#   - Rows are assigned by cycling through [0 .. board_rows-1] via cycle_row().
+#   - Positions are clamped into the board via clamp_to_board().
+#   - Non‑dictionary entries in the group are ignored defensively.
+
+# --- Automatic grid placement for objectives that use default lanes ----------
+
+func _auto_place_entities_for_objective() -> void:
+	# Automatically place entities on the invisible grid for objectives that
+	# rely on the default lane layout.
+	var objective: String = String(_state.get("objective", "defeat"))
+	var stage_modifiers: Dictionary = _state.get("stage_modifiers", {})
+	var preserve_positions: bool = bool(stage_modifiers.get("preserve_positions", false))
+	var cols: int = _get_board_cols(_state)
+	var rows: int = _get_board_rows(_state)
+	if cols <= 0 or rows <= 0:
+		return
+
+	# Shrine multi-wave support:
+	# For wave 2+ of Purify Shrine / Protect Shrine, we preserve ALLY positions
+	# (heroes + shrine) but still need to place freshly spawned ENEMIES.
+	if preserve_positions and (
+		objective == "purify_shrine" or
+		objective == CombatConstants.OBJECTIVE_PROTECT_SHRINE
+	):
+		place_enemies_in_default_lanes()
+		return
+
+	match objective:
+		# Generic defeat / combat trial style objectives
+		"defeat", "combat_trial", CombatConstants.OBJECTIVE_DEFEAT_ENEMIES:
+			# Both standalone battles and realm “combat_trial” stages use the
+			# same default lane layout: allies on the left spawn columns,
+			# enemies on the right spawn columns.
+			place_allies_in_default_lanes()
+			place_enemies_in_default_lanes()
+
+		# Shrine protection / purify shrine stages
+		"purify_shrine", CombatConstants.OBJECTIVE_PROTECT_SHRINE:
+			# Shrine stages share the same default lanes for combatants, but
+			# the shrine itself is anchored via COMBAT_SHRINE_GRID_POS on the
+			# entity created by ObjectiveRunner. Placement helpers are careful
+			# to skip shrine entities so we do not overwrite that anchor.
+			place_allies_in_default_lanes()
+			place_enemies_in_default_lanes()
+
+		# Future objectives that might want to reuse the same default lanes
+		"protect_totem", CombatConstants.OBJECTIVE_PROTECT_TOTEM:
+			# Protect Totem stages will re-use the same basic lane layout for
+			# allies/enemies. The totem itself is anchored by ObjectiveRunner
+			# using COMBAT_TOTEM_STATIC_GRID_POS or carried by a hero.
+			place_allies_in_default_lanes()
+			place_enemies_in_default_lanes()
+
+		_:
+			# Other objectives either do not use the grid yet or will handle
+			# placement explicitly in their own setup routines.
+			pass
+
+func _place_group_in_spawn_columns(group: Array, spawn_columns: Array, start_row_index: int = 0) -> void:
+	# Internal workhorse: mutates the given group in place, assigning grid_pos
+	# to each dictionary entry according to the spawn_columns pattern.
+	if typeof(group) != TYPE_ARRAY:
+		return
+	if typeof(spawn_columns) != TYPE_ARRAY or spawn_columns.is_empty():
+		return
+
+	var cols: Array[int] = []
+	for c in spawn_columns:
+		cols.append(int(c))
+
+	var rows: int = _get_board_rows(_state)
+	if rows <= 0:
+		# Board not configured; skip placement to avoid fabricating positions.
+		return
+
+	var col_count: int = cols.size()
+	if col_count <= 0:
+		return
+
+	for i in range(group.size()):
+		var ent_v: Variant = group[i]
+		if typeof(ent_v) != TYPE_DICTIONARY:
+			continue
+
+		var ent: Dictionary = ent_v
+
+		# Do not move shrine entities via the generic lane placer; their
+		# position is configured via COMBAT_SHRINE_GRID_POS and set by the
+		# caller (e.g. ObjectiveRunner for Purify Shrine stages).
+		if CombatEntities.is_shrine(ent):
+			group[i] = ent
+			continue
+
+		var col_index: int = cols[i % col_count]
+		var row_index: int = cycle_row(start_row_index + i, _state)
+		var pos: Vector2i = Vector2i(col_index, row_index)
+		pos = clamp_to_board(pos, _state)
+
+		CombatEntities.set_grid_pos(ent, pos)
+		group[i] = ent
+
+func place_allies_in_default_lanes(start_row_index: int = 0) -> void:
+	# Places all current allies into the configured ally spawn columns using
+	# a simple lane pattern (row cycling). Safe to call multiple times; it
+	# will overwrite existing grid_pos values for allies.
+	var ally_cols: Array = get_ally_spawn_columns()
+	if ally_cols.is_empty():
+		return
+	_place_group_in_spawn_columns(_state.get("allies", []), ally_cols, start_row_index)
+
+func place_enemies_in_default_lanes(start_row_index: int = 0) -> void:
+	# Places all current enemies into the configured enemy spawn columns using
+	# the same deterministic lane pattern as allies.
+	#
+	# Shrine objectives always spawn enemies from the far edge of the board
+	var enemy_cols: Array = get_enemy_spawn_columns()
+	var obj_s: String = String(_state.get("objective", ""))
+
+	# Shrine objectives always spawn enemies from the far edge of the board
+	if obj_s == "purify_shrine":
+		enemy_cols = HeroBal.COMBAT_SHRINE_ENEMY_SPAWN_COLUMNS
+	if enemy_cols.is_empty():
+		return
+	_place_group_in_spawn_columns(_state.get("enemies", []), enemy_cols, start_row_index)
 
 # MVP shrine behaviour:
 # - The engine auto-designates a single "purifier" hero for Purify Shrine stages.
@@ -759,12 +1447,6 @@ func _apply_morale_overrides() -> void:
 		var id_e := int((e as Dictionary).get("id", -1))
 		if id_e >= 0 and _morale_overrides.has(id_e):
 			CombatEmotionSystem.write_morale(e as Dictionary, int(_morale_overrides[id_e]))
-
-
-
-
-
-
 
 # Map numeric action types to canonical logger verbs
 static func _action_type_to_verb(t: int) -> String:

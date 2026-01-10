@@ -193,6 +193,25 @@ static func build_objective_context(state: Dictionary) -> Dictionary:
 			"max_hp": int(hp_pair.get("max_hp", 0)),
 		}
 
+	# Totem descriptor, if any
+	var totem_ent: Dictionary = {}
+	for a in state.get("allies", []):
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var ent: Dictionary = a
+		if CombatEntities.is_totem(ent):
+			totem_ent = ent
+			break
+
+	if totem_ent.size() > 0:
+		var totem_hp_pair: Dictionary = CombatEntities.read_hp_pair(totem_ent)
+		ctx["totem"] = {
+			"id": int(totem_ent.get("id", -1)),
+			"name": str(totem_ent.get("name", "Totem")),
+			"hp": int(totem_hp_pair.get("hp", 0)),
+			"max_hp": int(totem_hp_pair.get("max_hp", 0)),
+		}
+
 	# Basic alive counts
 	ctx["allies_alive"] = _alive_count(state.get("allies", []))
 	ctx["enemies_alive"] = _alive_count(state.get("enemies", []))

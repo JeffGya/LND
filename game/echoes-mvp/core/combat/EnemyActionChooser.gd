@@ -103,6 +103,15 @@ static func choose_action(enemy: Dictionary, ctx: Dictionary) -> Dictionary:
 
 # Internal helpers ------------------------------------------------------------
 
+# Helper: Find an entity dictionary by id within a group.
+static func _find_entity_by_id(id: int, group: Array) -> Dictionary:
+	for e in group:
+		if typeof(e) != TYPE_DICTIONARY:
+			continue
+		if int(e.get("id", -1)) == id:
+			return e
+	return {}
+
 # Pick the enemy with the lowest HP ratio (hp / max_hp), tie-breaking by id.
 static func _pick_lowest_hp_ratio(group: Array[Dictionary]) -> Dictionary:
 	var best: Dictionary = {}
@@ -181,16 +190,33 @@ static func _pick_nearest(actor_id: int, group: Array[Dictionary], ctx: Dictiona
 				best = cand
 	return best
 
-# Range check using optional ctx.distance + ctx.attack_range. If missing,
-# assume everyone is in range for MVP.
 static func _is_in_range(actor_id: int, target_id: int, ctx: Dictionary) -> bool:
-	if not ctx.has("distance") or not ctx.has("attack_range"):
-		return true
-	var dist_map: Dictionary = ctx.get("distance", {})
 	var atk_range: int = int(ctx.get("attack_range", 1))
-	var key: int = _pair_key(actor_id, target_id)
-	var tiles: int = int(dist_map.get(key, atk_range))
-	return tiles <= atk_range
+	# Preferred path: use precomputed distance map if available
+	if ctx.has("distance") and ctx.has("attack_range"):
+		var dist_map: Dictionary = ctx.get("distance", {})
+		var key: int = _pair_key(actor_id, target_id)
+		var tiles: int = int(dist_map.get(key, atk_range))
+		return tiles <= atk_range
+
+	# Fallback: compute distance from grid positions on entities
+	var allies: Array = ctx.get("allies", [])
+	var enemies: Array = ctx.get("enemies", [])
+	var actor: Dictionary = _find_entity_by_id(actor_id, allies)
+	if actor.is_empty():
+		actor = _find_entity_by_id(actor_id, enemies)
+	var target: Dictionary = _find_entity_by_id(target_id, allies)
+	if target.is_empty():
+		target = _find_entity_by_id(target_id, enemies)
+
+	# If we cannot resolve entities, stay permissive to avoid breaking legacy callers.
+	if actor.is_empty() or target.is_empty():
+		return true
+
+	var tiles_from_grid: int = CombatEntities.grid_distance_between_entities(actor, target)
+	if tiles_from_grid < 0:
+		return true
+	return tiles_from_grid <= atk_range
 
 # Stable pairing key for (actor_id, target_id) in a flat dictionary map.
 static func _pair_key(a: int, b: int) -> int:

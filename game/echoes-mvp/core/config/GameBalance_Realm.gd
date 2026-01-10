@@ -301,6 +301,7 @@ static func get_purify_shrine_hp_threshold_fraction(tier: int) -> float:
 	var fraction: float = float(table.get(tier, GameBalance_HeroCombat.SHRINE_PURIFY_BASE_HP_THRESHOLD_FRACTION))
 	return fraction
 
+
 static func get_purify_shrine_max_purify_per_wave(tier: int) -> int:
 	## Returns the maximum number of successful Purify uses allowed per wave
 	## for a given tier. This is layered on top of the combat-side base cap.
@@ -309,6 +310,103 @@ static func get_purify_shrine_max_purify_per_wave(tier: int) -> int:
 		tier = 1
 	var max_count: int = int(table.get(tier, GameBalance_HeroCombat.SHRINE_MAX_PURIFY_PER_WAVE_BASE))
 	return max_count
+
+# ---------------------------------------------------------
+# PROTECT TOTEM (objective-specific tuning)
+# Canon: N-round defense of a sacred totem with static and
+# carriable variants. This block holds realm/tier-side knobs;
+# combat-side behavior (burden, pass cooldown, invulnerability)
+# lives in GameBalance_HeroCombat.gd.
+# ---------------------------------------------------------
+const PROTECT_TOTEM := {
+	# Base max HP for totems per difficulty tier. Kept slightly
+	# below shrine HP at the same tier because enemies do not
+	# drain passively but can focus the totem.
+	"totem_hp_by_tier": {
+		1: 80,
+		2: 110,
+		3: 140,
+	},
+
+	# Variant weights per tier. Values do not need to sum to 1.0,
+	# they are treated as relative weights by the generator.
+	# MVP: mostly static at tier 1, more carried at higher tiers.
+	"variant_weights": {
+		1: { "static": 60, "carried": 40 },
+		2: { "static": 50, "carried": 50 },
+		3: { "static": 40, "carried": 60 },
+	},
+
+	# Extra damage multiplier applied when enemies hit the totem.
+	# This is layered on top of normal enemy damage tuning.
+	"totem_damage_multiplier_by_tier": {
+		1: 1.25,
+		2: 1.4,
+		3: 1.55,
+	},
+
+	# Base relic-drop chance for successfully protected carriable
+	# totems per tier (before damage penalties). Expressed as
+	# [0.0, 1.0], and intentionally kept below 0.30 by canon.
+	"relic_base_chance_by_tier": {
+		1: 0.25,
+		2: 0.25,
+		3: 0.25,
+	},
+
+	# How strongly damage to the totem reduces relic chance.
+	# A value of 0.25 means that taking 100% of its HP in damage
+	# will subtract 0.25 (25 percentage points) from the base
+	# relic chance before clamping.
+	"relic_penalty_per_damage_fraction_by_tier": {
+		1: 0.2,
+		2: 0.25,
+		3: 0.3,
+	},
+}
+
+static func get_protect_totem_hp(tier: int) -> int:
+	## Returns the max HP for Protect Totem objectives at a given tier.
+	var cfg: Dictionary = PROTECT_TOTEM
+	var table: Dictionary = cfg.get("totem_hp_by_tier", {})
+	if not table.has(tier):
+		tier = 1
+	return int(table.get(tier, 80))
+
+static func get_protect_totem_variant_weights(tier: int) -> Dictionary:
+	## Returns the static vs carried variant weights for a tier.
+	var cfg: Dictionary = PROTECT_TOTEM
+	var table: Dictionary = cfg.get("variant_weights", {})
+	if not table.has(tier):
+		tier = 1
+	var weights = table.get(tier, { "static": 60, "carried": 40 })
+	if typeof(weights) == TYPE_DICTIONARY:
+		return weights
+	return { "static": 60, "carried": 40 }
+
+static func get_protect_totem_damage_multiplier(tier: int) -> float:
+	## Returns the enemy damage multiplier applied when hitting the totem.
+	var cfg: Dictionary = PROTECT_TOTEM
+	var table: Dictionary = cfg.get("totem_damage_multiplier_by_tier", {})
+	if not table.has(tier):
+		tier = 1
+	return float(table.get(tier, 1.25))
+
+static func get_protect_totem_relic_base_chance(tier: int) -> float:
+	## Returns the base relic drop chance (0–1) before penalties.
+	var cfg: Dictionary = PROTECT_TOTEM
+	var table: Dictionary = cfg.get("relic_base_chance_by_tier", {})
+	if not table.has(tier):
+		tier = 1
+	return float(table.get(tier, 0.25))
+
+static func get_protect_totem_relic_penalty_per_damage_fraction(tier: int) -> float:
+	## Returns how much relic chance is reduced per 1.0 of damage_fraction.
+	var cfg: Dictionary = PROTECT_TOTEM
+	var table: Dictionary = cfg.get("relic_penalty_per_damage_fraction_by_tier", {})
+	if not table.has(tier):
+		tier = 1
+	return float(table.get(tier, 0.2))
 
 # ---------------------------------------------------------
 # DIFFICULTY TIERS (multipliers)

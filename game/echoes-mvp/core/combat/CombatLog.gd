@@ -66,7 +66,9 @@ func normalize_event(raw: Dictionary) -> Dictionary:
 		"hp_max": null,
 		"atk": null,
 		"def": null,
-		"tags": []
+		"tags": [],
+		"from_pos": null,
+		"to_pos": null
 	}
 
 	# Actor fields
@@ -111,6 +113,34 @@ func normalize_event(raw: Dictionary) -> Dictionary:
 				var _g := int(raw.get("target_guard_after", 0))
 				if _g > 0:
 					out["tags"].append("[guard=%d]" % _g)
+		"MOVE":
+			out["payload_kind"] = "move"
+			out["value"] = 0
+
+			# Hybrid C:
+			# - If this MOVE was auto-converted from an ATTACK (engine tagged it
+			#   with `original_type = CombatConstants.ActionType.ATTACK`),
+			#   we keep the target so logs read:
+			#     "Hero MOVE → Enemy (.. → ..)"
+			# - For explicit MOVE actions, we clear the target so logs read:
+			#     "Hero MOVE (.. → ..)"
+			var orig_type: Variant = raw.get("original_type", null)
+			if orig_type == null or orig_type != CombatConstants.ActionType.ATTACK:
+				out["target_name"] = ""
+				out["target_id"] = -1
+
+			# Prefer canonical from_pos/to_pos, but tolerate older keys and
+			# the engine's `moved_from` / `moved_to` for backwards compatibility.
+			var fp: Variant = raw.get(
+				"from_pos",
+				raw.get("from_grid_pos", raw.get("from", raw.get("moved_from", null)))
+			)
+			var tp: Variant = raw.get(
+				"to_pos",
+				raw.get("to_grid_pos", raw.get("to", raw.get("moved_to", null)))
+			)
+			out["from_pos"] = fp
+			out["to_pos"] = tp
 		"REFUSE":
 			out["payload_kind"] = "refuse"
 			out["reason"] = String(raw.get("reason", raw.get("notes", "")))
@@ -178,6 +208,13 @@ static func _format_payload(ev: Dictionary) -> String:
 		"shield":
 			var v: int = int(ev.get("value", 0))
 			return "(+shield=%d)" % v if v > 0 else "(+shield)"
+		"move":
+			var from_s: String = _pos_to_string(ev.get("from_pos", null))
+			var to_s: String = _pos_to_string(ev.get("to_pos", null))
+			if from_s != "" and to_s != "":
+				return "(%s → %s)" % [from_s, to_s]
+			else:
+				return "(advance)"
 		"refuse":
 			var reason_raw: String = str(ev.get("reason", "refusal"))
 			# Canon wants e.g. "fear_refusal"; if not suffixed, add it.
@@ -193,6 +230,17 @@ static func _format_payload(ev: Dictionary) -> String:
 			return "(round_tick)"
 		_:
 			return ""
+
+# --- Position to string helper for move events
+static func _pos_to_string(pos_v: Variant) -> String:
+	if typeof(pos_v) == TYPE_VECTOR2I:
+		var p: Vector2i = pos_v
+		return "(%d,%d)" % [p.x, p.y]
+	elif typeof(pos_v) == TYPE_DICTIONARY:
+		var d: Dictionary = pos_v
+		if d.has("x") and d.has("y"):
+			return "(%d,%d)" % [int(d.get("x", 0)), int(d.get("y", 0))]
+	return ""
 
 ## Configure optional in-memory ring buffer (last N snapshots)
 func _init(max_snapshots: int = 10) -> void:
@@ -211,6 +259,18 @@ func print_round(snapshot: Dictionary) -> void:
 	# --- Header ---------------------------------------------------------------
 	var r: int = int(snapshot.get("round", 0))
 	print("\n— Round ", r, " —")
+	# Print board metadata if present
+	var board_cols: int = int(snapshot.get("board_cols", 0))
+	var board_rows: int = int(snapshot.get("board_rows", 0))
+	if board_cols > 0 and board_rows > 0:
+		print("Board:", board_cols, "x", board_rows)
+	else:
+		var bm: Dictionary = snapshot.get("board_meta", {})
+		if typeof(bm) == TYPE_DICTIONARY and bm.has("cols") and bm.has("rows"):
+			board_cols = int(bm.get("cols", 0))
+			board_rows = int(bm.get("rows", 0))
+			if board_cols > 0 and board_rows > 0:
+				print("Board:", board_cols, "x", board_rows)
 
 	# Optional name map for readable output (provided by CombatEngine)
 	var name_by_id: Dictionary = snapshot.get("name_by_id", {})
@@ -468,16 +528,31 @@ static func _format_state_after_group(group: Array) -> String:
 	for e in group:
 		if typeof(e) != TYPE_DICTIONARY:
 			continue
-		var name_str: String = str((e as Dictionary).get("name", "?"))
-		var hp: int = int((e as Dictionary).get("hp", 0))
-		var max_hp: int = int((e as Dictionary).get("max_hp", 0))
-		var ko: bool = bool((e as Dictionary).get("ko", false))
-		var guard_val: int = int((e as Dictionary).get("guard", 0))
-		var is_shrine: bool = bool((e as Dictionary).get("is_shrine", false))
+		var d: Dictionary = e
+		var name_str: String = str(d.get("name", "?"))
+		var hp: int = int(d.get("hp", 0))
+		var max_hp: int = int(d.get("max_hp", 0))
+		var ko: bool = bool(d.get("ko", false))
+		var guard_val: int = int(d.get("guard", 0))
+		var is_shrine: bool = bool(d.get("is_shrine", false))
+		var is_totem: bool = bool(d.get("is_totem", false))
+
+		# Optional grid position, if provided by the engine snapshot
+		var pos_txt: String = ""
+		var pos_v: Variant = d.get("grid_pos", null)
+		if typeof(pos_v) == TYPE_VECTOR2I:
+			var p: Vector2i = pos_v
+			pos_txt = " @(%d,%d)" % [p.x, p.y]
+		elif typeof(pos_v) == TYPE_DICTIONARY:
+			var pd: Dictionary = pos_v
+			if pd.has("x") and pd.has("y"):
+				pos_txt = " @(%d,%d)" % [int(pd.get("x", 0)), int(pd.get("y", 0))]
+
 		var tags: Array[String] = []
 		if is_shrine:
-			# Highlight shrine entries so Purify Shrine stages are easy to read in logs.
 			tags.append("SHRINE")
+		if is_totem:
+			tags.append("TOTEM")
 		if ko:
 			tags.append("KO")
 		if guard_val > 0:
@@ -485,6 +560,7 @@ static func _format_state_after_group(group: Array) -> String:
 		var tag_txt: String = ""
 		if not tags.is_empty():
 			tag_txt = " [" + String(" ").join(tags) + "]"
-		var item: String = "%s %d/%d%s" % [name_str, hp, max_hp, tag_txt]
+
+		var item: String = "%s %d/%d%s%s" % [name_str, hp, max_hp, pos_txt, tag_txt]
 		parts.append(item)
 	return "{ " + String(", ").join(parts) + " }"
